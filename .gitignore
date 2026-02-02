@@ -1,0 +1,7 @@
+build
+dist
+vox.egg-info
+__pycache__/
+*.pyc
+.env
+.DS_Store

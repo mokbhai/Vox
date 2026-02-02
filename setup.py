@@ -10,6 +10,8 @@ DATA_FILES = []
 OPTIONS = {
     "py2app": {
         "argv_emulation": False,
+        "strip": False,
+        "arch": None,
         "plist": {
             "CFBundleName": "Vox",
             "CFBundleDisplayName": "Vox",
@@ -44,5 +46,4 @@ setup(
     app=APP,
     data_files=DATA_FILES,
     options={"py2app": OPTIONS["py2app"]},
-    setup_requires=["py2app"],
 )
