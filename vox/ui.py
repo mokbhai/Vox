@@ -14,146 +14,22 @@ from vox.api import RewriteMode
 from vox.service import ServiceProvider
 
 
-class APIKeyDialog(AppKit.NSPanel):
-    """Dialog for entering the OpenAI API key."""
-
-    def __init__(self, callback):
-        """
-        Initialize the API key dialog.
-
-        Args:
-            callback: Function to call with the API key when saved.
-        """
-        screen = AppKit.NSScreen.mainScreen()
-        screen_frame = screen.visibleFrame()
-
-        window_width = 400
-        window_height = 150
-        x = (screen_frame.size.width - window_width) / 2
-        y = (screen_frame.size.height - window_height) / 2
-
-        frame = Foundation.NSMakeRect(x, y, window_width, window_height)
-
-        super().__init__(
-            frame,
-            AppKit.NSWindowStyleMaskTitled |
-            AppKit.NSWindowStyleMaskClosable |
-            AppKit.NSWindowStyleMaskMiniaturizable,
-            AppKit.NSBackingStoreBuffered,
-            False,
-        )
-
-        self.callback = callback
-        self.setTitle_("Vox - API Key")
-
-        # Create content view
-        self._create_ui()
-
-    def _create_ui(self):
-        """Create the dialog UI."""
-        content_view = AppKit.NSView.alloc().initWithFrame_(self.contentView().frame())
-        self.setContentView_(content_view)
-
-        # Label
-        label = AppKit.NSTextField.alloc().initWithFrame_(
-            Foundation.NSMakeRect(20, 100, 360, 20)
-        )
-        label.setStringValue_("Enter your OpenAI API key:")
-        label.setBezeled_(False)
-        label.setDrawsBackground_(False)
-        label.setEditable_(False)
-        label.setSelectable_(False)
-        content_view.addSubview_(label)
-
-        # Text field for API key
-        self._api_key_field = AppKit.NSTextField.alloc().initWithFrame_(
-            Foundation.NSMakeRect(20, 70, 280, 24)
-        )
-        self._api_key_field.setPlaceholderString_("sk-...")
-        self._api_key_field.setSecure_(True)
-        content_view.addSubview_(self._api_key_field)
-
-        # Paste button
-        paste_button = AppKit.NSButton.alloc().initWithFrame_(
-            Foundation.NSMakeRect(310, 70, 70, 24)
-        )
-        paste_button.setTitle_("Paste")
-        paste_button.setBezelStyle_(AppKit.NSBezelStyleRounded)
-        paste_button.setTarget_(self)
-        paste_button.setAction_("pasteKey:")
-        content_view.addSubview_(paste_button)
-
-        # Save button
-        save_button = AppKit.NSButton.alloc().initWithFrame_(
-            Foundation.NSMakeRect(230, 30, 70, 24)
-        )
-        save_button.setTitle_("Save")
-        save_button.setBezelStyle_(AppKit.NSBezelStyleRounded)
-        save_button.setTarget_(self)
-        save_button.setAction_("saveKey:")
-        content_view.addSubview_(save_button)
-
-        # Cancel button
-        cancel_button = AppKit.NSButton.alloc().initWithFrame_(
-            Foundation.NSMakeRect(310, 30, 70, 24)
-        )
-        cancel_button.setTitle_("Cancel")
-        cancel_button.setBezelStyle_(AppKit.NSBezelStyleRounded)
-        cancel_button.setTarget_(self)
-        cancel_button.setAction_("cancel:")
-        content_view.addSubview_(cancel_button)
-
-    def pasteKey_(self, sender):
-        """Handle Paste button click."""
-        pasteboard = AppKit.NSPasteboard.generalPasteboard()
-        clipboard_content = pasteboard.stringForType_(AppKit.NSStringPboardType)
-        if clipboard_content:
-            self._api_key_field.setStringValue_(clipboard_content)
-
-    def saveKey_(self, sender):
-        """Handle Save button click."""
-        api_key = self._api_key_field.stringValue()
-        self.callback(api_key)
-        self.close()
-
-    def cancel_(self, sender):
-        """Handle Cancel button click."""
-        self.close()
-
-    def show(self):
-        """Show the dialog as a modal sheet."""
-        # Set existing API key
-        config = get_config()
-        existing_key = config.get_api_key()
-        if existing_key:
-            self._api_key_field.setStringValue_(existing_key)
-
-        self.makeKeyAndOrderFront_(None)
-        AppKit.NSApp.runModalForWindow_(self)
-
-
 class SettingsDialog(AppKit.NSPanel):
-    """Dialog for configuring model and API settings."""
+    """Settings dialog for Vox."""
 
-    def __init__(self, callback, config):
-        """
-        Initialize the settings dialog.
-
-        Args:
-            callback: Function to call with (model, base_url) when saved.
-            config: Current config object.
-        """
+    def init(self):
+        """Initialize the settings dialog."""
         screen = AppKit.NSScreen.mainScreen()
         screen_frame = screen.visibleFrame()
 
-        window_width = 400
-        window_height = 220
+        window_width = 450
+        window_height = 320
         x = (screen_frame.size.width - window_width) / 2
         y = (screen_frame.size.height - window_height) / 2
 
         frame = Foundation.NSMakeRect(x, y, window_width, window_height)
 
-        super().__init__(
+        self = objc.super(SettingsDialog, self).initWithContentRect_styleMask_backing_defer_(
             frame,
             AppKit.NSWindowStyleMaskTitled |
             AppKit.NSWindowStyleMaskClosable,
@@ -161,22 +37,71 @@ class SettingsDialog(AppKit.NSPanel):
             False,
         )
 
-        self.callback = callback
-        self.config = config
-        self.setTitle_("Vox - Settings")
+        if self is None:
+            return None
 
-        self._create_ui()
+        self.setTitle_("Vox Settings")
+        self.setLevel_(AppKit.NSFloatingWindowLevel)
 
-    def _create_ui(self):
-        """Create the dialog UI."""
-        content_view = AppKit.NSView.alloc().initWithFrame_(self.contentView().frame())
-        self.setContentView_(content_view)
+        # Content view
+        content_view = self.contentView()
+        content_view.setWantsLayer_(True)
+        content_view.setLayer_(
+            AppKit.CALayer.layer().initWithFrame_(
+                Foundation.NSMakeRect(0, 0, window_width, window_height)
+            )
+        )
+        content_view.layer().setBackgroundColor_(
+            AppKit.NSColor.controlBackgroundColor().CGColor()
+        )
 
-        y_offset = 170
+        # Configuration
+        self.config = get_config()
+        self.save_callback = None
 
-        # Model label
+        y_offset = window_height - 50
+
+        # Title
+        title = AppKit.NSTextField.alloc().initWithFrame_(
+            Foundation.NSMakeRect(20, y_offset, 410, 30)
+        )
+        title.setStringValue_("Settings")
+        title.setFont_(AppKit.NSFont.boldSystemFontOfSize_(20))
+        title.setBezeled_(False)
+        title.setDrawsBackground_(False)
+        title.setEditable_(False)
+        title.setSelectable_(False)
+        content_view.addSubview_(title)
+
+        y_offset -= 50
+
+        # API Key Section
+        api_label = AppKit.NSTextField.alloc().initWithFrame_(
+            Foundation.NSMakeRect(20, y_offset, 410, 20)
+        )
+        api_label.setStringValue_("OpenAI API Key:")
+        api_label.setBezeled_(False)
+        api_label.setDrawsBackground_(False)
+        api_label.setEditable_(False)
+        api_label.setSelectable_(False)
+        content_view.addSubview_(api_label)
+
+        y_offset -= 30
+
+        self.api_field = AppKit.NSTextField.alloc().initWithFrame_(
+            Foundation.NSMakeRect(20, y_offset, 410, 30)
+        )
+        self.api_field.setPlaceholderString_("sk-...")
+        current_key = self.config.get_api_key()
+        if current_key:
+            self.api_field.setStringValue_(current_key)
+        content_view.addSubview_(self.api_field)
+
+        y_offset -= 50
+
+        # Model Section
         model_label = AppKit.NSTextField.alloc().initWithFrame_(
-            Foundation.NSMakeRect(20, y_offset, 360, 20)
+            Foundation.NSMakeRect(20, y_offset, 410, 20)
         )
         model_label.setStringValue_("Model:")
         model_label.setBezeled_(False)
@@ -185,63 +110,52 @@ class SettingsDialog(AppKit.NSPanel):
         model_label.setSelectable_(False)
         content_view.addSubview_(model_label)
 
-        # Model text field
         y_offset -= 30
-        self._model_field = AppKit.NSTextField.alloc().initWithFrame_(
-            Foundation.NSMakeRect(20, y_offset, 360, 24)
-        )
-        self._model_field.setPlaceholderString_("e.g. gpt-4o-mini, gpt-4o, claude-3-5-sonnet")
-        self._model_field.setStringValue_(self.config.model)
-        content_view.addSubview_(self._model_field)
 
-        # Base URL label
-        y_offset -= 40
-        base_url_label = AppKit.NSTextField.alloc().initWithFrame_(
-            Foundation.NSMakeRect(20, y_offset, 360, 20)
+        self.model_field = AppKit.NSTextField.alloc().initWithFrame_(
+            Foundation.NSMakeRect(20, y_offset, 410, 30)
         )
-        base_url_label.setStringValue_("Base URL (optional):")
-        base_url_label.setBezeled_(False)
-        base_url_label.setDrawsBackground_(False)
-        base_url_label.setEditable_(False)
-        base_url_label.setSelectable_(False)
-        content_view.addSubview_(base_url_label)
+        self.model_field.setPlaceholderString_("gpt-4o-mini")
+        self.model_field.setStringValue_(self.config.model)
+        content_view.addSubview_(self.model_field)
 
-        # Base URL text field
+        y_offset -= 50
+
+        # Base URL Section
+        url_label = AppKit.NSTextField.alloc().initWithFrame_(
+            Foundation.NSMakeRect(20, y_offset, 410, 20)
+        )
+        url_label.setStringValue_("Base URL (optional):")
+        url_label.setBezeled_(False)
+        url_label.setDrawsBackground_(False)
+        url_label.setEditable_(False)
+        url_label.setSelectable_(False)
+        content_view.addSubview_(url_label)
+
         y_offset -= 30
-        self._base_url_field = AppKit.NSTextField.alloc().initWithFrame_(
-            Foundation.NSMakeRect(20, y_offset, 360, 24)
+
+        self.url_field = AppKit.NSTextField.alloc().initWithFrame_(
+            Foundation.NSMakeRect(20, y_offset, 410, 30)
         )
-        self._base_url_field.setPlaceholderString_("e.g. https://api.openai.com/v1 (leave empty for default)")
+        self.url_field.setPlaceholderString_("https://api.openai.com/v1")
         if self.config.base_url:
-            self._base_url_field.setStringValue_(self.config.base_url)
-        content_view.addSubview_(self._base_url_field)
+            self.url_field.setStringValue_(self.config.base_url)
+        content_view.addSubview_(self.url_field)
 
-        # Info text
-        y_offset -= 40
-        info = AppKit.NSTextField.alloc().initWithFrame_(
-            Foundation.NSMakeRect(20, y_offset, 360, 30)
+        y_offset -= 50
+
+        # Launch at Login checkbox
+        self.launch_checkbox = AppKit.NSButton.alloc().initWithFrame_(
+            Foundation.NSMakeRect(20, y_offset, 200, 25)
         )
-        info.setStringValue_("Enter any OpenAI-compatible model name. For custom APIs, set the Base URL.")
-        info.setBezeled_(False)
-        info.setDrawsBackground_(False)
-        info.setEditable_(False)
-        info.setSelectable_(False)
-        info.setTextColor_(AppKit.NSColor.secondaryLabelColor())
-        content_view.addSubview_(info)
+        self.launch_checkbox.setButtonType_(AppKit.NSSwitchButton)
+        self.launch_checkbox.setTitle_("Launch at login")
+        self.launch_checkbox.setState_(AppKit.NSControlStateValueOn if self.config.auto_start else AppKit.NSControlStateValueOff)
+        content_view.addSubview_(self.launch_checkbox)
 
-        # Save button
-        save_button = AppKit.NSButton.alloc().initWithFrame_(
-            Foundation.NSMakeRect(230, 20, 70, 24)
-        )
-        save_button.setTitle_("Save")
-        save_button.setBezelStyle_(AppKit.NSBezelStyleRounded)
-        save_button.setTarget_(self)
-        save_button.setAction_("save:")
-        content_view.addSubview_(save_button)
-
-        # Cancel button
+        # Save and Cancel buttons
         cancel_button = AppKit.NSButton.alloc().initWithFrame_(
-            Foundation.NSMakeRect(310, 20, 70, 24)
+            Foundation.NSMakeRect(280, 20, 80, 30)
         )
         cancel_button.setTitle_("Cancel")
         cancel_button.setBezelStyle_(AppKit.NSBezelStyleRounded)
@@ -249,39 +163,60 @@ class SettingsDialog(AppKit.NSPanel):
         cancel_button.setAction_("cancel:")
         content_view.addSubview_(cancel_button)
 
+        save_button = AppKit.NSButton.alloc().initWithFrame_(
+            Foundation.NSMakeRect(360, 20, 70, 30)
+        )
+        save_button.setTitle_("Save")
+        save_button.setBezelStyle_(AppKit.NSBezelStyleRounded)
+        save_button.setKeyEquivalent_("\r")  # Return key
+        save_button.setTarget_(self)
+        save_button.setAction_("save:")
+        content_view.addSubview_(save_button)
+
+        return self
+
+    def setSaveCallback_(self, callback):
+        """Set the callback for saving settings."""
+        self.save_callback = callback
+
     def save_(self, sender):
-        """Handle Save button click."""
-        model = self._model_field.stringValue().strip()
-        base_url = self._base_url_field.stringValue().strip() or None
-        self.callback(model, base_url)
+        """Handle save button."""
+        api_key = self.api_field.stringValue().strip()
+        model = self.model_field.stringValue().strip() or "gpt-4o-mini"
+        base_url = self.url_field.stringValue().strip() or None
+        auto_start = self.launch_checkbox.state() == AppKit.NSControlStateValueOn
+
+        if self.save_callback:
+            self.save_callback(api_key, model, base_url, auto_start)
+
         self.close()
 
     def cancel_(self, sender):
-        """Handle Cancel button click."""
+        """Handle cancel button."""
         self.close()
 
     def show(self):
         """Show the dialog."""
         self.makeKeyAndOrderFront_(None)
-        AppKit.NSApp.runModalForWindow_(self)
+        AppKit.NSApp.activateIgnoringOtherApps_(True)
 
 
 class AboutDialog(AppKit.NSPanel):
     """About dialog for Vox."""
 
-    def __init__(self):
+    def init(self):
         """Initialize the about dialog."""
         screen = AppKit.NSScreen.mainScreen()
         screen_frame = screen.visibleFrame()
 
-        window_width = 300
-        window_height = 150
+        window_width = 350
+        window_height = 200
         x = (screen_frame.size.width - window_width) / 2
         y = (screen_frame.size.height - window_height) / 2
 
         frame = Foundation.NSMakeRect(x, y, window_width, window_height)
 
-        super().__init__(
+        self = objc.super(AboutDialog, self).initWithContentRect_styleMask_backing_defer_(
             frame,
             AppKit.NSWindowStyleMaskTitled |
             AppKit.NSWindowStyleMaskClosable,
@@ -289,20 +224,19 @@ class AboutDialog(AppKit.NSPanel):
             False,
         )
 
-        self.setTitle_("About Vox")
-        self._create_ui()
+        if self is None:
+            return None
 
-    def _create_ui(self):
-        """Create the dialog UI."""
-        content_view = AppKit.NSView.alloc().initWithFrame_(self.contentView().frame())
-        self.setContentView_(content_view)
+        self.setTitle_("About Vox")
+
+        content_view = self.contentView()
 
         # App name
         name = AppKit.NSTextField.alloc().initWithFrame_(
-            Foundation.NSMakeRect(20, 100, 260, 30)
+            Foundation.NSMakeRect(20, 130, 310, 30)
         )
         name.setStringValue_("Vox")
-        name.setFont_(AppKit.NSFont.boldSystemFontOfSize_(20))
+        name.setFont_(AppKit.NSFont.boldSystemFontOfSize_(24))
         name.setBezeled_(False)
         name.setDrawsBackground_(False)
         name.setEditable_(False)
@@ -312,7 +246,7 @@ class AboutDialog(AppKit.NSPanel):
 
         # Version
         version = AppKit.NSTextField.alloc().initWithFrame_(
-            Foundation.NSMakeRect(20, 70, 260, 20)
+            Foundation.NSMakeRect(20, 100, 310, 20)
         )
         version.setStringValue_("Version 0.1.0")
         version.setBezeled_(False)
@@ -324,9 +258,9 @@ class AboutDialog(AppKit.NSPanel):
 
         # Description
         desc = AppKit.NSTextField.alloc().initWithFrame_(
-            Foundation.NSMakeRect(20, 40, 260, 20)
+            Foundation.NSMakeRect(20, 60, 310, 40)
         )
-        desc.setStringValue_("AI-powered text rewriting")
+        desc.setStringValue_("AI-powered text rewriting\nthrough macOS contextual menu.")
         desc.setBezeled_(False)
         desc.setDrawsBackground_(False)
         desc.setEditable_(False)
@@ -334,9 +268,22 @@ class AboutDialog(AppKit.NSPanel):
         desc.setAlignment_(AppKit.NSTextAlignmentCenter)
         content_view.addSubview_(desc)
 
+        # OK button
+        ok_button = AppKit.NSButton.alloc().initWithFrame_(
+            Foundation.NSMakeRect(135, 15, 80, 30)
+        )
+        ok_button.setTitle_("OK")
+        ok_button.setBezelStyle_(AppKit.NSBezelStyleRounded)
+        ok_button.setTarget_(self)
+        ok_button.setAction_("close:")
+        content_view.addSubview_(ok_button)
+
+        return self
+
     def show(self):
         """Show the dialog."""
         self.makeKeyAndOrderFront_(None)
+        AppKit.NSApp.activateIgnoringOtherApps_(True)
 
 
 class MenuBarApp(AppKit.NSObject):
@@ -378,7 +325,6 @@ class MenuBarApp(AppKit.NSObject):
         self.status_item = status_bar.statusItemWithLength_(AppKit.NSVariableStatusItemLength)
 
         # Set icon (using a simple text icon for now)
-        # In production, you'd use an actual icon image
         self.status_item.setTitle_("V")
 
         # Create menu
@@ -389,30 +335,12 @@ class MenuBarApp(AppKit.NSObject):
         """Create the menu items."""
         self.menu.removeAllItems()
 
-        # API Key
-        api_key_item = AppKit.NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
-            "Set API Key...", "showAPIKeyDialog:", ""
+        # Settings
+        settings_item = AppKit.NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
+            "Settings...", "showSettings:", ""
         )
-        api_key_item.setTarget_(self)
-        self.menu.addItem_(api_key_item)
-
-        # Model Selection
-        model_item = AppKit.NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
-            f"Model: {self.config.model}", "showModelDialog:", ""
-        )
-        model_item.setTarget_(self)
-        self.menu.addItem_(model_item)
-
-        # Separator
-        self.menu.addItem_(AppKit.NSMenuItem.separatorItem())
-
-        # Auto-start
-        auto_start_title = "Open at Login" if not self.config.auto_start else "✓ Open at Login"
-        auto_start_item = AppKit.NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
-            auto_start_title, "toggleAutoStart:", ""
-        )
-        auto_start_item.setTarget_(self)
-        self.menu.addItem_(auto_start_item)
+        settings_item.setTarget_(self)
+        self.menu.addItem_(settings_item)
 
         # Separator
         self.menu.addItem_(AppKit.NSMenuItem.separatorItem())
@@ -424,6 +352,9 @@ class MenuBarApp(AppKit.NSObject):
         about_item.setTarget_(self)
         self.menu.addItem_(about_item)
 
+        # Separator
+        self.menu.addItem_(AppKit.NSMenuItem.separatorItem())
+
         # Quit
         quit_item = AppKit.NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
             "Quit Vox", "quit:", "q"
@@ -433,50 +364,28 @@ class MenuBarApp(AppKit.NSObject):
 
     # Menu item actions
 
-    def showAPIKeyDialog_(self, sender):
-        """Show the API key dialog."""
-        dialog = APIKeyDialog(self._save_api_key)
+    def showSettings_(self, sender):
+        """Show the settings dialog."""
+        dialog = SettingsDialog.alloc().init()
+        dialog.setSaveCallback_(self._save_settings)
         dialog.show()
 
-    def _save_api_key(self, api_key: str):
-        """
-        Save the API key.
-
-        Args:
-            api_key: The API key to save.
-        """
+    def _save_settings(self, api_key: str, model: str, base_url: Optional[str], auto_start: bool):
+        """Save the settings."""
         if api_key:
             self.config.set_api_key(api_key)
             self.service_provider.update_api_key()
 
-    def showModelDialog_(self, sender):
-        """Show the settings dialog."""
-        dialog = SettingsDialog(self._save_settings, self.config)
-        dialog.show()
-
-    def _save_settings(self, model: str, base_url: Optional[str]):
-        """
-        Save the settings.
-
-        Args:
-            model: The model to use.
-            base_url: The custom base URL (optional).
-        """
         self.config.model = model
         self.config.base_url = base_url
         self.service_provider.update_model()
-        self._create_menu()  # Refresh menu
 
-    def toggleAutoStart_(self, sender):
-        """Toggle auto-start at login."""
-        current = self.config.auto_start
-        new_state = not current
-        self.config.set_auto_start(new_state)
-        self._create_menu()  # Refresh menu
+        if auto_start != self.config.auto_start:
+            self.config.set_auto_start(auto_start)
 
     def showAbout_(self, sender):
         """Show the about dialog."""
-        dialog = AboutDialog()
+        dialog = AboutDialog.alloc().init()
         dialog.show()
 
     def quit_(self, sender):
