@@ -22,11 +22,36 @@ OPTIONS = {
             "LSUIElement": True,
             "NSServices": [
                 {
-                    "NSMessage": "vox.service",
+                    "NSMessage": "fixGrammarService",
                     "NSMenuItem": {"default": "Rewrite with Vox"},
-                    "NSKeyEquivalent": {"default": ""},
+                    "NSPortName": {"default": "Vox"},
+                    "NSSendTypes": ["public.utf8-plain-text"],
                     "NSRestrictedContext": True,
-                }
+                },
+                {
+                    "NSMessage": "fixGrammarService",
+                    "NSMenuItem": {"default": "Rewrite with Vox/Fix Grammar"},
+                    "NSPortName": {"default": "Vox"},
+                    "NSSendTypes": ["public.utf8-plain-text"],
+                },
+                {
+                    "NSMessage": "professionalService",
+                    "NSMenuItem": {"default": "Rewrite with Vox/Professional"},
+                    "NSPortName": {"default": "Vox"},
+                    "NSSendTypes": ["public.utf8-plain-text"],
+                },
+                {
+                    "NSMessage": "conciseService",
+                    "NSMenuItem": {"default": "Rewrite with Vox/Concise"},
+                    "NSPortName": {"default": "Vox"},
+                    "NSSendTypes": ["public.utf8-plain-text"],
+                },
+                {
+                    "NSMessage": "friendlyService",
+                    "NSMenuItem": {"default": "Rewrite with Vox/Friendly"},
+                    "NSPortName": {"default": "Vox"},
+                    "NSSendTypes": ["public.utf8-plain-text"],
+                },
             ],
         },
         "includes": [
@@ -37,6 +62,7 @@ OPTIONS = {
             "vox.ui",
             "vox.notifications",
         ],
+        "excludes": ["pkg_resources"],
         "packages": ["vox"],
     }
 }

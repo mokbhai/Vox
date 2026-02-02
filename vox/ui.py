@@ -3,12 +3,13 @@ Menu bar application for Vox.
 
 Provides a menu bar icon with access to settings and configuration.
 """
+import objc
 import AppKit
 import Foundation
 from PyObjCTools import AppHelper
 from typing import Optional
 
-from vox.config import get_config, DEFAULT_MODELS
+from vox.config import get_config
 from vox.api import RewriteMode
 from vox.service import ServiceProvider
 
@@ -66,11 +67,21 @@ class APIKeyDialog(AppKit.NSPanel):
 
         # Text field for API key
         self._api_key_field = AppKit.NSTextField.alloc().initWithFrame_(
-            Foundation.NSMakeRect(20, 70, 360, 24)
+            Foundation.NSMakeRect(20, 70, 280, 24)
         )
         self._api_key_field.setPlaceholderString_("sk-...")
         self._api_key_field.setSecure_(True)
         content_view.addSubview_(self._api_key_field)
+
+        # Paste button
+        paste_button = AppKit.NSButton.alloc().initWithFrame_(
+            Foundation.NSMakeRect(310, 70, 70, 24)
+        )
+        paste_button.setTitle_("Paste")
+        paste_button.setBezelStyle_(AppKit.NSBezelStyleRounded)
+        paste_button.setTarget_(self)
+        paste_button.setAction_("pasteKey:")
+        content_view.addSubview_(paste_button)
 
         # Save button
         save_button = AppKit.NSButton.alloc().initWithFrame_(
@@ -91,6 +102,13 @@ class APIKeyDialog(AppKit.NSPanel):
         cancel_button.setTarget_(self)
         cancel_button.setAction_("cancel:")
         content_view.addSubview_(cancel_button)
+
+    def pasteKey_(self, sender):
+        """Handle Paste button click."""
+        pasteboard = AppKit.NSPasteboard.generalPasteboard()
+        clipboard_content = pasteboard.stringForType_(AppKit.NSStringPboardType)
+        if clipboard_content:
+            self._api_key_field.setStringValue_(clipboard_content)
 
     def saveKey_(self, sender):
         """Handle Save button click."""
@@ -114,21 +132,22 @@ class APIKeyDialog(AppKit.NSPanel):
         AppKit.NSApp.runModalForWindow_(self)
 
 
-class ModelSelectionDialog(AppKit.NSPanel):
-    """Dialog for selecting the OpenAI model."""
+class SettingsDialog(AppKit.NSPanel):
+    """Dialog for configuring model and API settings."""
 
-    def __init__(self, callback):
+    def __init__(self, callback, config):
         """
-        Initialize the model selection dialog.
+        Initialize the settings dialog.
 
         Args:
-            callback: Function to call with the selected model.
+            callback: Function to call with (model, base_url) when saved.
+            config: Current config object.
         """
         screen = AppKit.NSScreen.mainScreen()
         screen_frame = screen.visibleFrame()
 
-        window_width = 300
-        window_height = 200
+        window_width = 400
+        window_height = 220
         x = (screen_frame.size.width - window_width) / 2
         y = (screen_frame.size.height - window_height) / 2
 
@@ -143,7 +162,8 @@ class ModelSelectionDialog(AppKit.NSPanel):
         )
 
         self.callback = callback
-        self.setTitle_("Vox - Select Model")
+        self.config = config
+        self.setTitle_("Vox - Settings")
 
         self._create_ui()
 
@@ -152,39 +172,56 @@ class ModelSelectionDialog(AppKit.NSPanel):
         content_view = AppKit.NSView.alloc().initWithFrame_(self.contentView().frame())
         self.setContentView_(content_view)
 
-        # Label
-        label = AppKit.NSTextField.alloc().initWithFrame_(
-            Foundation.NSMakeRect(20, 150, 260, 20)
+        y_offset = 170
+
+        # Model label
+        model_label = AppKit.NSTextField.alloc().initWithFrame_(
+            Foundation.NSMakeRect(20, y_offset, 360, 20)
         )
-        label.setStringValue_("Select OpenAI Model:")
-        label.setBezeled_(False)
-        label.setDrawsBackground_(False)
-        label.setEditable_(False)
-        label.setSelectable_(False)
-        content_view.addSubview_(label)
+        model_label.setStringValue_("Model:")
+        model_label.setBezeled_(False)
+        model_label.setDrawsBackground_(False)
+        model_label.setEditable_(False)
+        model_label.setSelectable_(False)
+        content_view.addSubview_(model_label)
 
-        # Popup button for model selection
-        self._model_popup = AppKit.NSPopUpButton.alloc().initWithFrame_(
-            Foundation.NSMakeRect(20, 110, 260, 26)
+        # Model text field
+        y_offset -= 30
+        self._model_field = AppKit.NSTextField.alloc().initWithFrame_(
+            Foundation.NSMakeRect(20, y_offset, 360, 24)
         )
-        for model in DEFAULT_MODELS:
-            self._model_popup.addItemWithTitle_(model)
+        self._model_field.setPlaceholderString_("e.g. gpt-4o-mini, gpt-4o, claude-3-5-sonnet")
+        self._model_field.setStringValue_(self.config.model)
+        content_view.addSubview_(self._model_field)
 
-        # Select current model
-        config = get_config()
-        current_model = config.model
-        for i, model in enumerate(DEFAULT_MODELS):
-            if model == current_model:
-                self._model_popup.selectItemAtIndex_(i)
-                break
+        # Base URL label
+        y_offset -= 40
+        base_url_label = AppKit.NSTextField.alloc().initWithFrame_(
+            Foundation.NSMakeRect(20, y_offset, 360, 20)
+        )
+        base_url_label.setStringValue_("Base URL (optional):")
+        base_url_label.setBezeled_(False)
+        base_url_label.setDrawsBackground_(False)
+        base_url_label.setEditable_(False)
+        base_url_label.setSelectable_(False)
+        content_view.addSubview_(base_url_label)
 
-        content_view.addSubview_(self._model_popup)
+        # Base URL text field
+        y_offset -= 30
+        self._base_url_field = AppKit.NSTextField.alloc().initWithFrame_(
+            Foundation.NSMakeRect(20, y_offset, 360, 24)
+        )
+        self._base_url_field.setPlaceholderString_("e.g. https://api.openai.com/v1 (leave empty for default)")
+        if self.config.base_url:
+            self._base_url_field.setStringValue_(self.config.base_url)
+        content_view.addSubview_(self._base_url_field)
 
         # Info text
+        y_offset -= 40
         info = AppKit.NSTextField.alloc().initWithFrame_(
-            Foundation.NSMakeRect(20, 70, 260, 40)
+            Foundation.NSMakeRect(20, y_offset, 360, 30)
         )
-        info.setStringValue_("gpt-4o-mini is recommended for best performance and cost.")
+        info.setStringValue_("Enter any OpenAI-compatible model name. For custom APIs, set the Base URL.")
         info.setBezeled_(False)
         info.setDrawsBackground_(False)
         info.setEditable_(False)
@@ -192,20 +229,35 @@ class ModelSelectionDialog(AppKit.NSPanel):
         info.setTextColor_(AppKit.NSColor.secondaryLabelColor())
         content_view.addSubview_(info)
 
-        # OK button
-        ok_button = AppKit.NSButton.alloc().initWithFrame_(
-            Foundation.NSMakeRect(180, 30, 100, 24)
+        # Save button
+        save_button = AppKit.NSButton.alloc().initWithFrame_(
+            Foundation.NSMakeRect(230, 20, 70, 24)
         )
-        ok_button.setTitle_("OK")
-        ok_button.setBezelStyle_(AppKit.NSBezelStyleRounded)
-        ok_button.setTarget_(self)
-        ok_button.setAction_("ok:")
-        content_view.addSubview_(ok_button)
+        save_button.setTitle_("Save")
+        save_button.setBezelStyle_(AppKit.NSBezelStyleRounded)
+        save_button.setTarget_(self)
+        save_button.setAction_("save:")
+        content_view.addSubview_(save_button)
 
-    def ok_(self, sender):
-        """Handle OK button click."""
-        selected_model = self._model_popup.titleOfSelectedItem()
-        self.callback(selected_model)
+        # Cancel button
+        cancel_button = AppKit.NSButton.alloc().initWithFrame_(
+            Foundation.NSMakeRect(310, 20, 70, 24)
+        )
+        cancel_button.setTitle_("Cancel")
+        cancel_button.setBezelStyle_(AppKit.NSBezelStyleRounded)
+        cancel_button.setTarget_(self)
+        cancel_button.setAction_("cancel:")
+        content_view.addSubview_(cancel_button)
+
+    def save_(self, sender):
+        """Handle Save button click."""
+        model = self._model_field.stringValue().strip()
+        base_url = self._base_url_field.stringValue().strip() or None
+        self.callback(model, base_url)
+        self.close()
+
+    def cancel_(self, sender):
+        """Handle Cancel button click."""
         self.close()
 
     def show(self):
@@ -287,16 +339,26 @@ class AboutDialog(AppKit.NSPanel):
         self.makeKeyAndOrderFront_(None)
 
 
-class MenuBarApp:
+class MenuBarApp(AppKit.NSObject):
     """Main menu bar application for Vox."""
 
-    def __init__(self, service_provider: ServiceProvider):
-        """
-        Initialize the menu bar app.
+    def init(self):
+        """Initialize the menu bar app (ObjC initializer)."""
+        self = objc.super(MenuBarApp, self).init()
+        if self is None:
+            return None
 
-        Args:
-            service_provider: The service provider instance.
-        """
+        # Placeholder values - will be set after init
+        self.service_provider = None
+        self.config = None
+        self.status_item = None
+        self.menu = None
+        self.app = None
+
+        return self
+
+    def setupWithService_(self, service_provider):
+        """Set up the app with a service provider (called after init)."""
         self.service_provider = service_provider
         self.config = get_config()
 
@@ -307,6 +369,8 @@ class MenuBarApp:
         # Create status item
         self._create_status_item()
         self._create_menu()
+
+        return self
 
     def _create_status_item(self):
         """Create the status item in the menu bar."""
@@ -386,18 +450,20 @@ class MenuBarApp:
             self.service_provider.update_api_key()
 
     def showModelDialog_(self, sender):
-        """Show the model selection dialog."""
-        dialog = ModelSelectionDialog(self._save_model)
+        """Show the settings dialog."""
+        dialog = SettingsDialog(self._save_settings, self.config)
         dialog.show()
 
-    def _save_model(self, model: str):
+    def _save_settings(self, model: str, base_url: Optional[str]):
         """
-        Save the selected model.
+        Save the settings.
 
         Args:
             model: The model to use.
+            base_url: The custom base URL (optional).
         """
         self.config.model = model
+        self.config.base_url = base_url
         self.service_provider.update_model()
         self._create_menu()  # Refresh menu
 

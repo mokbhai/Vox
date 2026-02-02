@@ -15,13 +15,20 @@ sync:
 
 # Build the .app bundle
 build: sync
-	uv run python setup.py py2app
+	uv run pyinstaller vox.spec
+	@if [ -d "$(DIST_DIR)/$(APP_NAME).app" ]; then \
+		echo "Build successful: $(DIST_DIR)/$(APP_NAME).app"; \
+	else \
+		echo "Build failed!"; \
+		exit 1; \
+	fi
 
 # Clean build artifacts
 clean:
 	rm -rf $(BUILD_DIR) $(DIST_DIR) .venv
 	find . -type d -name "__pycache__" -exec rm -rf {} + 2>/dev/null || true
 	find . -type f -name "*.pyc" -delete
+	find . -type d -name "*.spec" -exec rm -rf {} + 2>/dev/null || true
 
 # Install to /Applications
 install: build
@@ -34,7 +41,7 @@ dev: sync
 # Flush services cache (required after service changes)
 flush:
 	killall cfprefsd 2>/dev/null || true
-	/usr/bin/pbs -flush
+	/System/Library/CoreServices/pbs -flush
 
 # Run tests
 test: sync
@@ -54,15 +61,15 @@ help:
 	@echo "Vox - AI-powered text rewriting"
 	@echo ""
 	@echo "Targets:"
-	@echo "  sync    - Install dependencies with uv"
-	@echo "  build   - Build the .app bundle (default)"
-	@echo "  clean   - Remove build artifacts"
-	@echo "  install - Install to /Applications"
-	@echo "  dev     - Run in development mode"
-	@echo "  flush   - Flush macOS services cache"
-	@echo "  test    - Run tests"
-	@echo "  lint    - Lint code"
-	@echo "  fmt     - Format code"
+	@echo "  sync     - Install dependencies with uv"
+	@echo "  build    - Build the .app bundle (default)"
+	@echo "  clean    - Remove build artifacts"
+	@echo "  install  - Install to /Applications"
+	@echo "  dev      - Run in development mode"
+	@echo "  flush    - Flush macOS services cache"
+	@echo "  test     - Run tests"
+	@echo "  lint     - Lint code"
+	@echo "  fmt      - Format code"
 	@echo ""
 	@echo "Installation:"
 	@echo "  make sync && make install && make flush"

@@ -20,6 +20,7 @@ DEFAULT_MODELS = ["gpt-4o", "gpt-4o-mini", "gpt-4-turbo", "gpt-3.5-turbo"]
 
 DEFAULT_CONFIG = {
     "model": "gpt-4o-mini",
+    "base_url": None,  # Custom OpenAI-compatible API base URL
     "auto_start": False,
     "toast_position": "cursor",  # or "top-right", "top-center"
 }
@@ -76,6 +77,20 @@ class Config:
     def model(self, value: str):
         """Set the OpenAI model."""
         self._config["model"] = value
+        self.save()
+
+    @property
+    def base_url(self) -> Optional[str]:
+        """Get the custom base URL for OpenAI API."""
+        return self._config.get("base_url")
+
+    @base_url.setter
+    def base_url(self, value: Optional[str]):
+        """Set the custom base URL for OpenAI API."""
+        if value and value.strip():
+            self._config["base_url"] = value.strip()
+        else:
+            self._config["base_url"] = None
         self.save()
 
     @property

@@ -45,7 +45,7 @@ class ServiceProvider(AppKit.NSObject):
             api_key = config.get_api_key()
             if not api_key:
                 return None
-            self._api_client = RewriteAPI(api_key, config.model)
+            self._api_client = RewriteAPI(api_key, config.model, config.base_url)
         return self._api_client
 
     def _reset_api_client(self):
@@ -186,9 +186,14 @@ class ServiceProvider(AppKit.NSObject):
 
     def register_services(self):
         """Register the services with macOS."""
-        # This is handled by the Info.plist entries in py2app
-        # But we can trigger a refresh
-        Foundation.NSUpdateDynamicServices()
+        # This is handled by the Info.plist entries
+        # Trigger a refresh of services via subprocess
+        import subprocess
+        try:
+            subprocess.run(["/System/Library/CoreServices/pbs", "-flush"],
+                         check=False, capture_output=True)
+        except FileNotFoundError:
+            pass  # pbs command not available
 
     def update_api_key(self):
         """Update the API client when the API key changes."""

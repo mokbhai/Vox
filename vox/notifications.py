@@ -4,6 +4,7 @@ Notification system for Vox.
 Provides toast popups near the cursor for loading state
 and macOS notification banners for errors.
 """
+import objc
 import AppKit
 import Foundation
 from PyObjCTools import AppHelper

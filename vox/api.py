@@ -76,16 +76,21 @@ class RateLimitError(RewriteError):
 class RewriteAPI:
     """Handles text rewriting using OpenAI's API."""
 
-    def __init__(self, api_key: str, model: str = "gpt-4o-mini"):
+    def __init__(self, api_key: str, model: str = "gpt-4o-mini", base_url: Optional[str] = None):
         """
         Initialize the RewriteAPI.
 
         Args:
             api_key: OpenAI API key.
             model: The model to use for rewriting.
+            base_url: Custom base URL for OpenAI-compatible API (optional).
         """
-        self.client = OpenAI(api_key=api_key)
+        if base_url:
+            self.client = OpenAI(api_key=api_key, base_url=base_url)
+        else:
+            self.client = OpenAI(api_key=api_key)
         self.model = model
+        self.base_url = base_url
 
     def set_model(self, model: str):
         """
