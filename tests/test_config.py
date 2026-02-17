@@ -8,8 +8,6 @@ from vox.config import (
     Config,
     DEFAULT_CONFIG,
     DEFAULT_MODELS,
-    KEYRING_SERVICE_NAME,
-    KEYRING_API_KEY_ITEM,
     get_config,
     reset_config,
 )
@@ -38,11 +36,6 @@ class TestConfigConstants:
         assert DEFAULT_CONFIG["base_url"] is None
         assert DEFAULT_CONFIG["auto_start"] is False
         assert DEFAULT_CONFIG["toast_position"] == "cursor"
-
-    def test_keyring_constants(self):
-        """Test keyring constants are correctly defined."""
-        assert KEYRING_SERVICE_NAME == "com.voxapp.rewrite"
-        assert KEYRING_API_KEY_ITEM == "openai_api_key"
 
 
 class TestConfig:
@@ -125,11 +118,11 @@ class TestConfig:
 
 
 class TestConfigApiKey:
-    """Tests for API key management via keychain."""
+    """Tests for API key management via config file."""
 
     @pytest.fixture
     def temp_config(self):
-        """Create a config instance for keychain tests."""
+        """Create a config instance for API key tests."""
         with tempfile.TemporaryDirectory() as tmpdir:
             with patch("vox.config.Path.home", return_value=Path(tmpdir)):
                 reset_config()
@@ -138,51 +131,114 @@ class TestConfigApiKey:
 
     def test_get_api_key_when_not_set(self, temp_config):
         """Test getting API key when none is stored."""
-        with patch("vox.config.keyring.get_password", return_value=None):
-            assert temp_config.get_api_key() is None
+        assert temp_config.get_api_key() is None
 
     def test_get_api_key_when_set(self, temp_config):
         """Test getting API key when one is stored."""
-        with patch("vox.config.keyring.get_password", return_value="sk-test123"):
-            assert temp_config.get_api_key() == "sk-test123"
+        temp_config.set_api_key("sk-test123")
+        assert temp_config.get_api_key() == "sk-test123"
 
     def test_set_api_key(self, temp_config):
         """Test setting API key."""
-        with patch("vox.config.keyring.set_password") as mock_set:
-            result = temp_config.set_api_key("sk-newkey")
-            assert result is True
-            mock_set.assert_called_once_with(
-                KEYRING_SERVICE_NAME, KEYRING_API_KEY_ITEM, "sk-newkey"
-            )
+        result = temp_config.set_api_key("sk-newkey")
+        assert result is True
 
-    def test_set_api_key_failure(self, temp_config):
-        """Test setting API key when keyring fails."""
-        with patch("vox.config.keyring.set_password", side_effect=Exception("Failed")):
-            result = temp_config.set_api_key("sk-newkey")
-            assert result is False
+        # Verify it's persisted
+        with open(temp_config.config_file, "r") as f:
+            data = yaml.safe_load(f)
+        assert data["api_key"] == "sk-newkey"
 
     def test_delete_api_key(self, temp_config):
         """Test deleting API key."""
-        with patch("vox.config.keyring.delete_password") as mock_delete:
-            result = temp_config.delete_api_key()
-            assert result is True
-            mock_delete.assert_called_once_with(KEYRING_SERVICE_NAME, KEYRING_API_KEY_ITEM)
+        temp_config.set_api_key("sk-test")
+        assert temp_config.has_api_key() is True
 
-    def test_delete_api_key_failure(self, temp_config):
-        """Test deleting API key when keyring fails."""
-        with patch("vox.config.keyring.delete_password", side_effect=Exception("Failed")):
-            result = temp_config.delete_api_key()
-            assert result is False
+        result = temp_config.delete_api_key()
+        assert result is True
+        assert temp_config.get_api_key() is None
+
+    def test_delete_api_key_when_not_set(self, temp_config):
+        """Test deleting API key when none exists."""
+        result = temp_config.delete_api_key()
+        assert result is True  # Should succeed even if key doesn't exist
 
     def test_has_api_key_true(self, temp_config):
         """Test has_api_key returns True when key exists."""
-        with patch("vox.config.keyring.get_password", return_value="sk-test"):
-            assert temp_config.has_api_key() is True
+        temp_config.set_api_key("sk-test")
+        assert temp_config.has_api_key() is True
 
     def test_has_api_key_false(self, temp_config):
         """Test has_api_key returns False when key doesn't exist."""
-        with patch("vox.config.keyring.get_password", return_value=None):
-            assert temp_config.has_api_key() is False
+        assert temp_config.has_api_key() is False
+
+    def test_has_api_key_empty_string(self, temp_config):
+        """Test has_api_key returns False for empty string."""
+        temp_config.set_api_key("")
+        assert temp_config.has_api_key() is False
+
+
+class TestConfigHotkey:
+    """Tests for hot key configuration."""
+
+    @pytest.fixture
+    def temp_config(self):
+        """Create a config instance for hot key tests."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch("vox.config.Path.home", return_value=Path(tmpdir)):
+                reset_config()
+                config = Config()
+                yield config
+
+    def test_hotkey_enabled_default(self, temp_config):
+        """Test default hotkey_enabled value."""
+        assert temp_config.hotkey_enabled is True
+
+    def test_hotkey_enabled_getter_setter(self, temp_config):
+        """Test hotkey_enabled getter and setter."""
+        temp_config.hotkey_enabled = False
+        assert temp_config.hotkey_enabled is False
+
+        temp_config.hotkey_enabled = True
+        assert temp_config.hotkey_enabled is True
+
+    def test_hotkey_modifiers_default(self, temp_config):
+        """Test default hotkey_modifiers value."""
+        assert temp_config.hotkey_modifiers == "cmd"
+
+    def test_hotkey_modifiers_getter_setter(self, temp_config):
+        """Test hotkey_modifiers getter and setter."""
+        temp_config.hotkey_modifiers = "option"
+        assert temp_config.hotkey_modifiers == "option"
+
+        temp_config.hotkey_modifiers = "cmd+shift"
+        assert temp_config.hotkey_modifiers == "cmd+shift"
+
+    def test_hotkey_key_default(self, temp_config):
+        """Test default hotkey_key value."""
+        assert temp_config.hotkey_key == "d"
+
+    def test_hotkey_key_getter_setter(self, temp_config):
+        """Test hotkey_key getter and setter."""
+        temp_config.hotkey_key = "v"
+        assert temp_config.hotkey_key == "v"
+
+        # Test case normalization
+        temp_config.hotkey_key = "R"
+        assert temp_config.hotkey_key == "r"
+
+    def test_hotkey_config_persisted(self, temp_config):
+        """Test hot key settings are persisted."""
+        temp_config.hotkey_enabled = False
+        temp_config.hotkey_modifiers = "option"
+        temp_config.hotkey_key = "r"
+
+        # Load new config instance
+        reset_config()
+        new_config = Config()
+
+        assert new_config.hotkey_enabled is False
+        assert new_config.hotkey_modifiers == "option"
+        assert new_config.hotkey_key == "r"
 
 
 class TestConfigAutoStart:

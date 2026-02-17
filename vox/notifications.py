@@ -34,6 +34,7 @@ class ToastWindow(AppKit.NSWindow):
         window.setTitle_("Vox")
         window.setOpaque_(False)
         window.setBackgroundColor_(AppKit.NSColor.colorWithDeviceWhite_alpha_(0.2, 0.9))
+        # Use floating window level to appear above most windows
         window.setLevel_(AppKit.NSFloatingWindowLevel)
 
         # Create text field

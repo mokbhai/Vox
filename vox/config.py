@@ -18,6 +18,9 @@ DEFAULT_CONFIG = {
     "base_url": None,  # Custom OpenAI-compatible API base URL
     "auto_start": False,
     "toast_position": "cursor",  # or "top-right", "top-center"
+    "hotkey_enabled": True,
+    "hotkey_modifiers": "cmd",  # "option", "cmd", "control", "shift", or combinations
+    "hotkey_key": "d",
 }
 
 
@@ -108,6 +111,39 @@ class Config:
     def toast_position(self, value: str):
         """Set toast notification position preference."""
         self._config["toast_position"] = value
+        self.save()
+
+    @property
+    def hotkey_enabled(self) -> bool:
+        """Get whether hot key is enabled."""
+        return self._config.get("hotkey_enabled", DEFAULT_CONFIG["hotkey_enabled"])
+
+    @hotkey_enabled.setter
+    def hotkey_enabled(self, value: bool):
+        """Set whether hot key is enabled."""
+        self._config["hotkey_enabled"] = value
+        self.save()
+
+    @property
+    def hotkey_modifiers(self) -> str:
+        """Get hot key modifiers (e.g., 'option', 'cmd', 'cmd+shift')."""
+        return self._config.get("hotkey_modifiers", DEFAULT_CONFIG["hotkey_modifiers"])
+
+    @hotkey_modifiers.setter
+    def hotkey_modifiers(self, value: str):
+        """Set hot key modifiers."""
+        self._config["hotkey_modifiers"] = value
+        self.save()
+
+    @property
+    def hotkey_key(self) -> str:
+        """Get hot key character (e.g., 'v', 'r')."""
+        return self._config.get("hotkey_key", DEFAULT_CONFIG["hotkey_key"])
+
+    @hotkey_key.setter
+    def hotkey_key(self, value: str):
+        """Set hot key character."""
+        self._config["hotkey_key"] = value.lower()
         self.save()
 
     # API Key Management via config file
