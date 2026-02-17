@@ -332,10 +332,12 @@ class ModePickerDialog(AppKit.NSObject):
         AppKit.NSApp.activateIgnoringOtherApps_(True)
         response = alert.runModal()
 
-        # Map button response to mode (button 1 = first mode, etc.)
+        # Map button response to mode
+        # NSAlert returns NSAlertFirstButtonReturn (1000) for first button, 1001 for second, etc.
+        button_index = response - AppKit.NSAlertFirstButtonReturn
         modes = list(RewriteMode)
-        if response >= 1 and response <= len(modes):
-            self._selected_mode = modes[response - 1]
+        if 0 <= button_index < len(modes):
+            self._selected_mode = modes[button_index]
             if self._callback:
                 # Clear callback before calling to prevent memory leaks
                 cb = self._callback

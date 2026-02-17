@@ -119,6 +119,7 @@ class RewriteAPI:
             return text
 
         try:
+            print(f"API call: model={self.model}, base_url={self.base_url}", flush=True)
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=[
@@ -126,12 +127,26 @@ class RewriteAPI:
                     {"role": "user", "content": text},
                 ],
                 temperature=0.7,
-                max_tokens=None,
             )
-            return response.choices[0].message.content.strip()
+            print(f"API response type: {type(response)}, value: {response}", flush=True)
 
+            if response is None or not response.choices:
+                raise RewriteError("Empty response from API - check your model and base URL settings")
+
+            content = response.choices[0].message.content
+            if content is None:
+                raise RewriteError("API returned empty content")
+
+            return content.strip()
+
+        except RewriteError:
+            raise
         except OpenAIError as e:
+            print(f"OpenAI error: {type(e).__name__}: {e}", flush=True)
             self._handle_openai_error(e)
+            raise RewriteError(f"API error: {e}")
+        except Exception as e:
+            print(f"Unexpected API error: {type(e).__name__}: {e}", flush=True)
             raise RewriteError(f"API error: {e}")
 
     def _handle_openai_error(self, error: OpenAIError):
