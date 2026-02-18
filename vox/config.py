@@ -4,7 +4,6 @@ Configuration management for Vox.
 Handles loading/saving configuration from config.yml and storing
 the API key securely in the macOS Keychain.
 """
-import os
 import yaml
 from pathlib import Path
 from typing import Optional
@@ -18,9 +17,13 @@ DEFAULT_CONFIG = {
     "base_url": None,  # Custom OpenAI-compatible API base URL
     "auto_start": False,
     "toast_position": "cursor",  # or "top-right", "top-center"
-    "hotkey_enabled": True,
-    "hotkey_modifiers": "cmd",  # "option", "cmd", "control", "shift", or combinations
-    "hotkey_key": "d",
+    "hotkeys_enabled": True,
+    "hotkeys": {
+        "fix_grammar":  {"modifiers": "cmd+shift", "key": "g"},
+        "professional": {"modifiers": "cmd+shift", "key": "p"},
+        "concise":      {"modifiers": "cmd+shift", "key": "c"},
+        "friendly":     {"modifiers": "cmd+shift", "key": "f"},
+    },
 }
 
 
@@ -49,12 +52,48 @@ class Config:
     def load(self):
         """Load configuration from file, merging with defaults."""
         self._config = DEFAULT_CONFIG.copy()
+        # Deep-copy the hotkeys dict so mutations don't affect DEFAULT_CONFIG
+        self._config["hotkeys"] = {
+            k: dict(v) for k, v in DEFAULT_CONFIG["hotkeys"].items()
+        }
 
         if self.config_file.exists():
             try:
                 with open(self.config_file, "r") as f:
                     user_config = yaml.safe_load(f) or {}
-                self._config.update(user_config)
+
+                # Migrate old single-hotkey format to per-mode format
+                if "hotkey_key" in user_config and "hotkeys" not in user_config:
+                    old_mod = user_config.pop("hotkey_modifiers", "cmd")
+                    old_key = user_config.pop("hotkey_key", "d")
+                    old_enabled = user_config.pop("hotkey_enabled", True)
+
+                    user_config["hotkeys_enabled"] = old_enabled
+                    user_config["hotkeys"] = {
+                        k: dict(v) for k, v in DEFAULT_CONFIG["hotkeys"].items()
+                    }
+                    # Migrate the old single hotkey to fix_grammar
+                    user_config["hotkeys"]["fix_grammar"] = {
+                        "modifiers": old_mod,
+                        "key": old_key,
+                    }
+                    # Save migrated config
+                    self._config.update(user_config)
+                    self.save()
+                else:
+                    # Clean up any leftover old keys
+                    for old_key in ("hotkey_enabled", "hotkey_modifiers", "hotkey_key"):
+                        user_config.pop(old_key, None)
+
+                    # Merge hotkeys dict carefully (keep defaults for missing modes)
+                    if "hotkeys" in user_config:
+                        stored_hotkeys = user_config.pop("hotkeys")
+                        for mode_key, hk in stored_hotkeys.items():
+                            if isinstance(hk, dict):
+                                self._config["hotkeys"][mode_key] = dict(hk)
+
+                    self._config.update(user_config)
+
             except Exception as e:
                 print(f"Warning: Could not load config: {e}")
 
@@ -114,37 +153,59 @@ class Config:
         self.save()
 
     @property
-    def hotkey_enabled(self) -> bool:
-        """Get whether hot key is enabled."""
-        return self._config.get("hotkey_enabled", DEFAULT_CONFIG["hotkey_enabled"])
+    def hotkeys_enabled(self) -> bool:
+        """Get whether hot keys are enabled."""
+        return self._config.get("hotkeys_enabled", DEFAULT_CONFIG["hotkeys_enabled"])
 
-    @hotkey_enabled.setter
-    def hotkey_enabled(self, value: bool):
-        """Set whether hot key is enabled."""
-        self._config["hotkey_enabled"] = value
+    @hotkeys_enabled.setter
+    def hotkeys_enabled(self, value: bool):
+        """Set whether hot keys are enabled."""
+        self._config["hotkeys_enabled"] = value
         self.save()
 
-    @property
-    def hotkey_modifiers(self) -> str:
-        """Get hot key modifiers (e.g., 'option', 'cmd', 'cmd+shift')."""
-        return self._config.get("hotkey_modifiers", DEFAULT_CONFIG["hotkey_modifiers"])
+    def get_mode_hotkey(self, mode_value: str) -> dict:
+        """Get the hotkey config for a specific mode.
 
-    @hotkey_modifiers.setter
-    def hotkey_modifiers(self, value: str):
-        """Set hot key modifiers."""
-        self._config["hotkey_modifiers"] = value
+        Args:
+            mode_value: The mode value string (e.g. "fix_grammar").
+
+        Returns:
+            Dict with "modifiers" and "key" strings.
+        """
+        hotkeys = self._config.get("hotkeys", DEFAULT_CONFIG["hotkeys"])
+        default = DEFAULT_CONFIG["hotkeys"].get(mode_value, {"modifiers": "", "key": ""})
+        return dict(hotkeys.get(mode_value, default))
+
+    def set_mode_hotkey(self, mode_value: str, modifiers: str, key: str):
+        """Set the hotkey for a specific mode.
+
+        Args:
+            mode_value: The mode value string (e.g. "fix_grammar").
+            modifiers: Modifier string (e.g. "cmd+shift").
+            key: Key character (e.g. "g").
+        """
+        if "hotkeys" not in self._config:
+            self._config["hotkeys"] = {
+                k: dict(v) for k, v in DEFAULT_CONFIG["hotkeys"].items()
+            }
+        self._config["hotkeys"][mode_value] = {
+            "modifiers": modifiers,
+            "key": key.lower() if key else "",
+        }
         self.save()
 
-    @property
-    def hotkey_key(self) -> str:
-        """Get hot key character (e.g., 'v', 'r')."""
-        return self._config.get("hotkey_key", DEFAULT_CONFIG["hotkey_key"])
+    def get_all_hotkeys(self) -> dict:
+        """Get all hotkey configs, merging defaults with stored values.
 
-    @hotkey_key.setter
-    def hotkey_key(self, value: str):
-        """Set hot key character."""
-        self._config["hotkey_key"] = value.lower()
-        self.save()
+        Returns:
+            Dict mapping mode_value -> {"modifiers": str, "key": str}.
+        """
+        defaults = {k: dict(v) for k, v in DEFAULT_CONFIG["hotkeys"].items()}
+        stored = self._config.get("hotkeys", {})
+        for mode_key, hk in stored.items():
+            if isinstance(hk, dict):
+                defaults[mode_key] = dict(hk)
+        return defaults
 
     # API Key Management via config file
 

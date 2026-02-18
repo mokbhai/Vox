@@ -8,7 +8,10 @@ import AppKit
 import Foundation
 from PyObjCTools import AppHelper
 from typing import Optional
+import threading
 import time
+import os
+import sys
 
 # Import Quartz.CoreGraphics for CGEvent functions
 from Quartz.CoreGraphics import (
@@ -22,9 +25,9 @@ from Quartz.CoreGraphics import (
 )
 
 from vox.config import get_config
-from vox.api import RewriteMode, RewriteAPI, APIKeyError, NetworkError, RateLimitError, RewriteError
+from vox.api import RewriteMode, RewriteAPI, APIKeyError, NetworkError, RateLimitError, RewriteError, DISPLAY_NAMES
 from vox.service import ServiceProvider
-from vox.notifications import ToastManager, ErrorNotifier
+from vox.notifications import LoadingBarManager, ErrorNotifier
 from vox.hotkey import (
     create_hotkey_manager,
     KEY_CODE_TO_CHAR,
@@ -33,6 +36,32 @@ from vox.hotkey import (
     modifier_mask_to_string,
     parse_modifiers,
 )
+
+
+def get_menu_bar_icon() -> Optional[AppKit.NSImage]:
+    """
+    Load the menu bar icon from the bundled resources or development path.
+
+    Returns:
+        NSImage configured as a template image, or None if not found.
+    """
+    # Try bundled location first (when running from .app)
+    if getattr(sys, 'frozen', False):
+        base_path = sys._MEIPASS
+        icon_path = os.path.join(base_path, 'assets', 'menubar', 'menuIcon44.png')
+    else:
+        # Development mode - use the assets folder
+        base_path = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+        icon_path = os.path.join(base_path, 'assets', 'menubar', 'menuIcon44.png')
+
+    if os.path.exists(icon_path):
+        image = AppKit.NSImage.alloc().initWithContentsOfFile_(icon_path)
+        if image:
+            image.setSize_((18, 18))  # Standard menu bar icon size
+            image.setTemplate_(True)  # Allows macOS to color it appropriately
+            return image
+
+    return None
 
 
 class EditableTextField(AppKit.NSTextField):
@@ -68,6 +97,8 @@ class HotkeyRecorderField(AppKit.NSTextField):
     symbols (e.g. "⌘⌥...").  Once a valid key is pressed it stores the
     result and displays it (e.g. "⌘⌥V").
 
+    Press Backspace, Delete, or Escape to clear the shortcut.
+
     After recording, `modifiers_mask` and `key_char` hold the raw values and
     `get_modifiers_string()` / `get_key_string()` return config-compatible
     strings.
@@ -87,6 +118,11 @@ class HotkeyRecorderField(AppKit.NSTextField):
 
     def set_hotkey(self, modifiers_str, key_str):
         """Initialise from config strings (e.g. "cmd+option", "v")."""
+        if not key_str:
+            self._modifiers_mask = 0
+            self._key_char = ""
+            self.setStringValue_("None")
+            return
         self._modifiers_mask = parse_modifiers(modifiers_str)
         self._key_char = key_str.lower()
         self.setStringValue_(format_hotkey_display(self._modifiers_mask, self._key_char))
@@ -95,7 +131,11 @@ class HotkeyRecorderField(AppKit.NSTextField):
         return modifier_mask_to_string(self._modifiers_mask)
 
     def get_key_string(self):
-        return self._key_char.lower() if self._key_char else "v"
+        return self._key_char.lower() if self._key_char else ""
+
+    def is_assigned(self):
+        """Return True if a shortcut key is assigned."""
+        return bool(self._key_char)
 
     # -- focus / recording ---------------------------------------------------
 
@@ -110,11 +150,11 @@ class HotkeyRecorderField(AppKit.NSTextField):
     def resignFirstResponder(self):
         if self._recording:
             self._recording = False
-            # If no valid shortcut was recorded, revert
-            if not self._key_char:
-                self.setStringValue_(self._original_value)
-            else:
+            # Show current state
+            if self._key_char:
                 self.setStringValue_(format_hotkey_display(self._modifiers_mask, self._key_char))
+            else:
+                self.setStringValue_("None")
         return objc.super(HotkeyRecorderField, self).resignFirstResponder()
 
     # -- event handling ------------------------------------------------------
@@ -151,6 +191,17 @@ class HotkeyRecorderField(AppKit.NSTextField):
 
     def _process_key_event(self, event):
         keycode = event.keyCode()
+
+        # Handle clear keys: Backspace (0x33), Delete (0x75), Escape (0x35)
+        if keycode in (0x33, 0x75, 0x35):
+            self._modifiers_mask = 0
+            self._key_char = ""
+            self._recording = False
+            self.setStringValue_("None")
+            if self.window():
+                self.window().makeFirstResponder_(None)
+            return
+
         char = KEY_CODE_TO_CHAR.get(keycode)
         if char is None:
             return  # ignore non-mapped keys (e.g. pure modifier press)
@@ -186,16 +237,14 @@ def show_settings_dialog(callback, config):
     current_model = config.model or "gpt-4o-mini"
     current_url = config.base_url or ""
     current_auto_start = config.auto_start
-    current_hotkey_enabled = config.hotkey_enabled
-    current_hotkey_modifiers = config.hotkey_modifiers
-    current_hotkey_key = config.hotkey_key
+    current_hotkeys_enabled = config.hotkeys_enabled
 
     # Create container for all fields
     container = AppKit.NSView.alloc().initWithFrame_(
-        Foundation.NSMakeRect(0, 0, 380, 290)
+        Foundation.NSMakeRect(0, 0, 380, 430)
     )
 
-    y_offset = 270
+    y_offset = 410
 
     # API Key
     api_label = AppKit.NSTextField.alloc().initWithFrame_(
@@ -300,7 +349,7 @@ def show_settings_dialog(callback, config):
     hotkey_header = AppKit.NSTextField.alloc().initWithFrame_(
         Foundation.NSMakeRect(0, y_offset, 380, 20)
     )
-    hotkey_header.setStringValue_("Hot Key")
+    hotkey_header.setStringValue_("Hot Keys")
     hotkey_header.setBezeled_(False)
     hotkey_header.setDrawsBackground_(False)
     hotkey_header.setEditable_(False)
@@ -314,7 +363,7 @@ def show_settings_dialog(callback, config):
     hotkey_enable_label = AppKit.NSTextField.alloc().initWithFrame_(
         Foundation.NSMakeRect(0, y_offset, 100, 20)
     )
-    hotkey_enable_label.setStringValue_("Hot Key:")
+    hotkey_enable_label.setStringValue_("")
     hotkey_enable_label.setBezeled_(False)
     hotkey_enable_label.setDrawsBackground_(False)
     hotkey_enable_label.setEditable_(False)
@@ -323,39 +372,48 @@ def show_settings_dialog(callback, config):
     container.addSubview_(hotkey_enable_label)
 
     hotkey_enable_checkbox = AppKit.NSButton.alloc().initWithFrame_(
-        Foundation.NSMakeRect(110, y_offset - 2, 150, 25)
+        Foundation.NSMakeRect(110, y_offset - 2, 200, 25)
     )
     hotkey_enable_checkbox.setButtonType_(AppKit.NSSwitchButton)
-    hotkey_enable_checkbox.setTitle_("Enable hot key")
-    hotkey_enable_checkbox.setState_(AppKit.NSControlStateValueOn if current_hotkey_enabled else AppKit.NSControlStateValueOff)
+    hotkey_enable_checkbox.setTitle_("Enable hot keys")
+    hotkey_enable_checkbox.setState_(AppKit.NSControlStateValueOn if current_hotkeys_enabled else AppKit.NSControlStateValueOff)
     container.addSubview_(hotkey_enable_checkbox)
 
     y_offset -= 35
 
-    # Shortcut recorder
-    shortcut_label = AppKit.NSTextField.alloc().initWithFrame_(
-        Foundation.NSMakeRect(0, y_offset, 100, 20)
-    )
-    shortcut_label.setStringValue_("Shortcut:")
-    shortcut_label.setBezeled_(False)
-    shortcut_label.setDrawsBackground_(False)
-    shortcut_label.setEditable_(False)
-    shortcut_label.setSelectable_(False)
-    shortcut_label.setAlignment_(AppKit.NSTextAlignmentRight)
-    container.addSubview_(shortcut_label)
+    # Per-mode hotkey recorders
+    hotkey_recorders = {}
+    all_hotkeys = config.get_all_hotkeys()
 
-    hotkey_recorder = HotkeyRecorderField.alloc().initWithFrame_(
-        Foundation.NSMakeRect(110, y_offset, 120, 24)
-    )
-    hotkey_recorder.set_hotkey(current_hotkey_modifiers, current_hotkey_key)
-    hotkey_recorder.setEditable_(True)
-    hotkey_recorder.setSelectable_(True)
-    container.addSubview_(hotkey_recorder)
+    for mode in RewriteMode:
+        mode_label = AppKit.NSTextField.alloc().initWithFrame_(
+            Foundation.NSMakeRect(0, y_offset, 100, 20)
+        )
+        mode_label.setStringValue_(DISPLAY_NAMES[mode] + ":")
+        mode_label.setBezeled_(False)
+        mode_label.setDrawsBackground_(False)
+        mode_label.setEditable_(False)
+        mode_label.setSelectable_(False)
+        mode_label.setAlignment_(AppKit.NSTextAlignmentRight)
+        container.addSubview_(mode_label)
 
+        recorder = HotkeyRecorderField.alloc().initWithFrame_(
+            Foundation.NSMakeRect(110, y_offset, 120, 24)
+        )
+        hk = all_hotkeys.get(mode.value, {"modifiers": "", "key": ""})
+        recorder.set_hotkey(hk["modifiers"], hk["key"])
+        recorder.setEditable_(True)
+        recorder.setSelectable_(True)
+        container.addSubview_(recorder)
+
+        hotkey_recorders[mode.value] = recorder
+        y_offset -= 35
+
+    # Help text
     shortcut_help = AppKit.NSTextField.alloc().initWithFrame_(
-        Foundation.NSMakeRect(240, y_offset, 140, 20)
+        Foundation.NSMakeRect(110, y_offset + 10, 260, 20)
     )
-    shortcut_help.setStringValue_("Click, then press keys")
+    shortcut_help.setStringValue_("Click field, press shortcut. Delete to clear.")
     shortcut_help.setBezeled_(False)
     shortcut_help.setDrawsBackground_(False)
     shortcut_help.setEditable_(False)
@@ -379,112 +437,49 @@ def show_settings_dialog(callback, config):
         model = model_field.stringValue().strip() or "gpt-4o-mini"
         base_url = url_field.stringValue().strip() or None
         auto_start = auto_checkbox.state() == AppKit.NSControlStateValueOn
-        hotkey_enabled = hotkey_enable_checkbox.state() == AppKit.NSControlStateValueOn
-        hotkey_modifiers = hotkey_recorder.get_modifiers_string()
-        hotkey_key = hotkey_recorder.get_key_string()
+        hotkeys_enabled = hotkey_enable_checkbox.state() == AppKit.NSControlStateValueOn
+
+        # Collect per-mode hotkey configs
+        hotkey_configs = {}
+        for mode_value, recorder in hotkey_recorders.items():
+            hotkey_configs[mode_value] = {
+                "modifiers": recorder.get_modifiers_string(),
+                "key": recorder.get_key_string(),
+            }
 
         if callback:
-            callback(api_key, model, base_url, auto_start, hotkey_enabled, hotkey_modifiers, hotkey_key)
+            callback(api_key, model, base_url, auto_start, hotkeys_enabled, hotkey_configs)
 
 
-def show_about_dialog(hotkey_modifiers: str = "option", hotkey_key: str = "v"):
-    """Show about dialog."""
-    # Format hot key for display using symbols
-    mod_mask = parse_modifiers(hotkey_modifiers)
-    hotkey_display = format_hotkey_display(mod_mask, hotkey_key)
+def show_about_dialog(config):
+    """Show about dialog with all assigned shortcuts."""
+    all_hotkeys = config.get_all_hotkeys()
+
+    # Build shortcut lines
+    shortcut_lines = []
+    for mode in RewriteMode:
+        hk = all_hotkeys.get(mode.value, {"modifiers": "", "key": ""})
+        if hk["key"]:
+            mod_mask = parse_modifiers(hk["modifiers"])
+            display = format_hotkey_display(mod_mask, hk["key"])
+            shortcut_lines.append(f"  {display}  {DISPLAY_NAMES[mode]}")
+
+    shortcuts_text = ""
+    if shortcut_lines:
+        shortcuts_text = "\n\nShortcuts:\n" + "\n".join(shortcut_lines)
+
     alert = AppKit.NSAlert.alloc().init()
     alert.setMessageText_("Vox")
     alert.setInformativeText_(
         "AI-powered text rewriting through macOS contextual menu.\n\n"
         "Version 0.1.0\n\n"
-        f"Right-click any text to rewrite with AI.\n"
-        f"Press {hotkey_display} with selected text for quick access."
+        f"Right-click any text to rewrite with AI."
+        f"{shortcuts_text}"
     )
     alert.setAlertStyle_(AppKit.NSAlertStyleInformational)
     alert.addButtonWithTitle_("OK")
     AppKit.NSApp.activateIgnoringOtherApps_(True)
     alert.runModal()
-
-
-class ModePickerDialog(AppKit.NSObject):
-    """Dialog for selecting a rewrite mode when triggered via hot key."""
-
-    def init(self):
-        """Initialize the mode picker."""
-        self = objc.super(ModePickerDialog, self).init()
-        if self is None:
-            return None
-        self._callback = None
-        self._selected_mode = None
-        self._frontmost_app = None  # Store the frontmost app before showing dialog
-        return self
-
-    def show_mode_picker(self, callback):
-        """
-        Show a mode picker dialog.
-
-        Args:
-            callback: Function to call with selected RewriteMode.
-
-        Returns:
-            The frontmost app (NSRunningApplication) before the dialog was shown,
-            or None if it couldn't be determined.
-        """
-        # Clear any previous callback to prevent memory leaks
-        self._callback = None
-        self._callback = callback
-        self._selected_mode = None
-
-        # Save the current frontmost application before showing dialog
-        workspace = AppKit.NSWorkspace.sharedWorkspace()
-        self._frontmost_app = workspace.frontmostApplication()
-
-        alert = AppKit.NSAlert.alloc().init()
-        alert.setMessageText_("Rewrite with Vox")
-        alert.setInformativeText_("Choose a rewrite style:")
-        alert.setAlertStyle_(AppKit.NSAlertStyleInformational)
-
-        # Add buttons for each mode
-        for mode, display_name in RewriteAPI.get_all_modes():
-            alert.addButtonWithTitle_(display_name)
-
-        # Add cancel button
-        alert.addButtonWithTitle_("Cancel")
-
-        # Activate app and show modal
-        AppKit.NSApp.activateIgnoringOtherApps_(True)
-        response = alert.runModal()
-
-        # Explicitly dismiss the alert window and drain pending UI events
-        # so it is visually gone before the callback blocks on the API call.
-        alert.window().orderOut_(None)
-        while True:
-            event = AppKit.NSApp.nextEventMatchingMask_untilDate_inMode_dequeue_(
-                AppKit.NSEventMaskAny,
-                Foundation.NSDate.distantPast(),
-                AppKit.NSDefaultRunLoopMode,
-                True,
-            )
-            if event is None:
-                break
-            AppKit.NSApp.sendEvent_(event)
-
-        # Map button response to mode
-        # NSAlert returns NSAlertFirstButtonReturn (1000) for first button, 1001 for second, etc.
-        button_index = response - AppKit.NSAlertFirstButtonReturn
-        modes = list(RewriteMode)
-        if 0 <= button_index < len(modes):
-            self._selected_mode = modes[button_index]
-            if self._callback:
-                # Clear callback before calling to prevent memory leaks
-                cb = self._callback
-                self._callback = None
-                cb(self._selected_mode)
-        else:
-            # Clear callback on cancel
-            self._callback = None
-
-        return self._frontmost_app
 
 
 def get_selected_text() -> Optional[str]:
@@ -656,29 +651,40 @@ class MenuBarApp:
         self.actions = MenuBarActions.alloc().init()
         self.actions.app = self
 
-        # Create toast manager for notifications
-        self._toast_manager = ToastManager()
-
-        # Create mode picker dialog
-        self._mode_picker = ModePickerDialog.alloc().init()
+        # Create loading bar for hotkey progress indication
+        self._loading_bar = LoadingBarManager()
 
         # Create hot key manager
         self._hotkey_manager = create_hotkey_manager()
         self._hotkey_manager.set_callback(self._handle_hotkey)
-        self._hotkey_manager.set_enabled(self.config.hotkey_enabled)
-        self._hotkey_manager.set_hotkey(self.config.hotkey_modifiers, self.config.hotkey_key)
+        self._hotkey_manager.set_enabled(self.config.hotkeys_enabled)
+        self._apply_hotkey_config()
 
         # Create status item
         self._create_status_item()
         self._create_menu()
+
+    def _apply_hotkey_config(self):
+        """Read all mode hotkeys from config and apply to the hotkey manager."""
+        all_hotkeys = self.config.get_all_hotkeys()
+        configs = []
+        for mode in RewriteMode:
+            hk = all_hotkeys.get(mode.value, {"modifiers": "", "key": ""})
+            configs.append((hk["modifiers"], hk["key"], mode))
+        self._hotkey_manager.set_hotkeys(configs)
 
     def _create_status_item(self):
         """Create the status item in the menu bar."""
         status_bar = AppKit.NSStatusBar.systemStatusBar()
         self.status_item = status_bar.statusItemWithLength_(AppKit.NSVariableStatusItemLength)
 
-        # Set icon (using a simple text icon for now)
-        self.status_item.setTitle_("V")
+        # Try to use the custom icon, fall back to text "V" if not available
+        icon = get_menu_bar_icon()
+        if icon:
+            self.status_item.button().setImage_(icon)
+            self.status_item.button().setImageScaling_(AppKit.NSImageScaleProportionallyDown)
+        else:
+            self.status_item.setTitle_("V")
 
         # Create menu
         self.menu = AppKit.NSMenu.alloc().init()
@@ -727,7 +733,7 @@ class MenuBarApp:
             traceback.print_exc()
 
     def _save_settings(self, api_key: str, model: str, base_url: Optional[str], auto_start: bool,
-                      hotkey_enabled: bool, hotkey_modifiers: str, hotkey_key: str):
+                      hotkeys_enabled: bool, hotkey_configs: dict):
         """Save the settings."""
         if api_key:
             self.config.set_api_key(api_key)
@@ -741,27 +747,27 @@ class MenuBarApp:
             self.config.set_auto_start(auto_start)
 
         # Update hot key settings
-        self.config.hotkey_enabled = hotkey_enabled
-        self.config.hotkey_modifiers = hotkey_modifiers
-        self.config.hotkey_key = hotkey_key
+        self.config.hotkeys_enabled = hotkeys_enabled
+        for mode_value, hk in hotkey_configs.items():
+            self.config.set_mode_hotkey(mode_value, hk["modifiers"], hk["key"])
 
-        # Re-register hot key with new settings
-        self._hotkey_manager.set_enabled(hotkey_enabled)
-        self._hotkey_manager.set_hotkey(hotkey_modifiers, hotkey_key)
-        if hotkey_enabled:
+        # Re-register hot keys with new settings
+        self._hotkey_manager.set_enabled(hotkeys_enabled)
+        self._apply_hotkey_config()
+        if hotkeys_enabled:
             self._hotkey_manager.reregister_hotkey()
 
     def _show_about(self):
         """Show the about dialog."""
-        show_about_dialog(self.config.hotkey_modifiers, self.config.hotkey_key)
+        show_about_dialog(self.config)
 
     def _quit(self):
         """Quit the application."""
         AppKit.NSApp.terminate_(None)
 
-    def _handle_hotkey(self):
-        """Handle the hot key trigger."""
-        print("Hot key triggered!")
+    def _handle_hotkey(self, mode: RewriteMode):
+        """Handle a hot key trigger for a specific mode."""
+        print(f"Hot key triggered for mode: {mode.value}")
 
         try:
             # Check if API key is configured
@@ -778,99 +784,73 @@ class MenuBarApp:
 
             print(f"Selected text: {text!r}")
 
-            # Store the text for use after mode selection
-            # (selection might be lost after mode picker dialog closes)
-            self._pending_rewrite_text = text
-
-            # Show mode picker dialog and capture the frontmost app
-            self._frontmost_app_before_picker = self._mode_picker.show_mode_picker(self._process_text_with_mode)
+            # Process directly — no popup needed
+            self._process_text_directly(text, mode)
 
         except Exception as e:
             print(f"Error handling hot key: {e}")
             import traceback
             traceback.print_exc()
 
-    def _process_text_with_mode(self, mode: RewriteMode):
+    def _process_text_directly(self, text: str, mode: RewriteMode):
         """
-        Process the text with the selected mode.
+        Process text with the given mode directly (no dialog).
+
+        The API call runs on a background thread so the main-thread run loop
+        stays free and Core Animation can render the loading-bar shimmer.
 
         Args:
+            text: The text to rewrite.
             mode: The rewrite mode to use.
         """
-        if mode is None:
-            print("Mode selection cancelled")
+        api_key = self.config.get_api_key()
+        if not api_key:
+            ErrorNotifier.show_api_key_error()
             return
 
-        try:
-            # Get API client
-            api_key = self.config.get_api_key()
-            if not api_key:
-                ErrorNotifier.show_api_key_error()
-                return
+        api_client = RewriteAPI(api_key, self.config.model, self.config.base_url)
 
-            api_client = RewriteAPI(api_key, self.config.model, self.config.base_url)
+        # Show loading bar at top of screen (main thread)
+        self._loading_bar.show()
 
-            # Use the stored text from when the hotkey was pressed
-            # (selection is likely gone after mode picker dialog)
-            text = getattr(self, '_pending_rewrite_text', None)
-            if not text:
-                print("No text to rewrite")
-                return
+        def _do_rewrite():
+            try:
+                result = api_client.rewrite(text, mode)
+                print(f"Rewritten text: {result!r}")
 
-            # Show loading toast
-            mode_name = RewriteAPI.get_display_name(mode)
-            self._toast_manager.show(f"{mode_name} with Vox...")
+                # Dispatch paste + hide back to the main thread
+                AppKit.NSOperationQueue.mainQueue().addOperationWithBlock_(
+                    lambda: self._finish_rewrite(result)
+                )
+            except (APIKeyError, NetworkError, RateLimitError, RewriteError) as exc:
+                msg = str(exc)
+                AppKit.NSOperationQueue.mainQueue().addOperationWithBlock_(
+                    lambda: self._fail_rewrite(msg)
+                )
+            except Exception as exc:
+                print(f"Error processing text: {exc}")
+                import traceback
+                traceback.print_exc()
+                msg = f"Error: {exc}"
+                AppKit.NSOperationQueue.mainQueue().addOperationWithBlock_(
+                    lambda: self._fail_rewrite(msg)
+                )
 
-            # Allow the toast to render before blocking on API call
-            AppKit.NSApp.currentEvent()  # Process any pending events
-            time.sleep(0.01)  # Small delay to ensure UI updates
+        threading.Thread(target=_do_rewrite, name="VoxRewrite", daemon=True).start()
 
-            # Process the text
-            result = api_client.rewrite(text, mode)
-            print(f"Rewritten text: {result!r}")
+    def _finish_rewrite(self, result: str):
+        """Called on the main thread after a successful rewrite."""
+        pasteboard = AppKit.NSPasteboard.generalPasteboard()
+        pasteboard.clearContents()
+        pasteboard.setString_forType_(result, AppKit.NSPasteboardTypeString)
 
-            # First, put the result in the clipboard (so manual paste works)
-            pasteboard = AppKit.NSPasteboard.generalPasteboard()
-            pasteboard.clearContents()
-            pasteboard.setString_forType_(result, AppKit.NSPasteboardTypeString)
+        paste_text(result)
+        self._loading_bar.hide()
 
-            # Try to restore focus to the previous app and paste
-            frontmost_app = getattr(self, '_frontmost_app_before_picker', None)
-            if frontmost_app and not frontmost_app.isTerminated():
-                # Activate the previous app
-                success = frontmost_app.activateWithOptions_(AppKit.NSApplicationActivateIgnoringOtherApps)
-
-                # Wait for the app to actually become frontmost before pasting
-                if success:
-                    workspace = AppKit.NSWorkspace.sharedWorkspace()
-                    for _ in range(20):  # Max 1 second (20 * 0.05s)
-                        current_frontmost = workspace.frontmostApplication()
-                        if (current_frontmost and
-                            current_frontmost.processIdentifier() == frontmost_app.processIdentifier()):
-                            break
-                        time.sleep(0.05)
-
-            # Now paste the text
-            paste_text(result)
-
-            # Clear stored text
-            self._pending_rewrite_text = None
-
-            # Hide toast
-            self._toast_manager.hide()
-
-        except (APIKeyError, NetworkError, RateLimitError, RewriteError) as e:
-            ErrorNotifier.show_generic_error(str(e))
-            self._toast_manager.hide()
-            self._pending_rewrite_text = None
-
-        except Exception as e:
-            print(f"Error processing text: {e}")
-            import traceback
-            traceback.print_exc()
-            ErrorNotifier.show_generic_error(f"Error: {e}")
-            self._toast_manager.hide()
-            self._pending_rewrite_text = None
+    def _fail_rewrite(self, message: str):
+        """Called on the main thread after a failed rewrite."""
+        ErrorNotifier.show_generic_error(message)
+        self._loading_bar.hide()
 
     def run(self):
         """Run the application."""

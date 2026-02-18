@@ -37,6 +37,11 @@ clean:
 install: build
 	cp -R $(DIST_DIR)/$(APP_NAME).app /Applications/
 	codesign --force --deep --sign - /Applications/$(APP_NAME).app
+	@echo "Clearing icon cache..."
+	touch /Applications/$(APP_NAME).app
+	rm -rf ~/Library/Caches/com.apple.iconservices.store 2>/dev/null || true
+	sudo rm -rf /Library/Caches/com.apple.iconservices.store 2>/dev/null || true
+	@echo "Icon cache cleared. You may need to log out and back in for changes to take effect."
 
 # Run in development mode (requires pbs -flush after changes)
 dev: sync

@@ -1,13 +1,14 @@
 """
 Notification system for Vox.
 
-Provides toast popups near the cursor for loading state
+Provides toast popups near the cursor for loading state,
+a top-of-screen loading bar with shimmer animation,
 and macOS notification banners for errors.
 """
 import objc
 import AppKit
 import Foundation
-from PyObjCTools import AppHelper
+import Quartz
 from typing import Optional
 
 
@@ -178,4 +179,165 @@ class ToastManager:
 
     def is_visible(self) -> bool:
         """Check if toast is currently visible."""
+        return self._is_visible
+
+
+class LoadingBar(AppKit.NSWindow):
+    """A thin pill-shaped loading bar at the top center of the screen.
+
+    Displays an animated shimmer sweep while the API call is in progress.
+    Positioned just below the menu bar, it doesn't steal focus or block
+    mouse events.
+    """
+
+    _instance = None
+
+    BAR_WIDTH = 260
+    BAR_HEIGHT = 5
+    CORNER_RADIUS = 2.5
+    TOP_OFFSET = 0  # flush with top edge of screen
+
+    @classmethod
+    def create(cls):
+        """Create and initialize the loading bar window."""
+        frame = Foundation.NSMakeRect(0, 0, cls.BAR_WIDTH, cls.BAR_HEIGHT)
+        window = cls.alloc().initWithContentRect_styleMask_backing_defer_(
+            frame,
+            AppKit.NSWindowStyleMaskBorderless,
+            AppKit.NSBackingStoreBuffered,
+            False,
+        )
+        if window is None:
+            return None
+
+        window.setTitle_("VoxLoading")
+        window.setOpaque_(False)
+        window.setHasShadow_(False)
+        window.setBackgroundColor_(AppKit.NSColor.clearColor())
+        # Status window level — above normal windows, below screen-saver
+        window.setLevel_(AppKit.NSStatusWindowLevel + 1)
+        window.setIgnoresMouseEvents_(True)
+        window.setCollectionBehavior_(
+            AppKit.NSWindowCollectionBehaviorCanJoinAllSpaces
+            | AppKit.NSWindowCollectionBehaviorStationary
+        )
+
+        # Content view with layer backing
+        content = AppKit.NSView.alloc().initWithFrame_(frame)
+        content.setWantsLayer_(True)
+        window.setContentView_(content)
+
+        layer = content.layer()
+        layer.setCornerRadius_(cls.CORNER_RADIUS)
+        layer.setMasksToBounds_(True)
+        # Subtle dark track
+        layer.setBackgroundColor_(
+            Quartz.CGColorCreateGenericRGB(0.3, 0.3, 0.4, 0.25)
+        )
+
+        # Shimmer gradient sublayer
+        gradient = Quartz.CAGradientLayer.layer()
+        gradient.setFrame_(Quartz.CGRectMake(0, 0, cls.BAR_WIDTH, cls.BAR_HEIGHT))
+        gradient.setCornerRadius_(cls.CORNER_RADIUS)
+
+        # Accent colour: vibrant blue glow
+        clear = Quartz.CGColorCreateGenericRGB(0.3, 0.5, 1.0, 0.0)
+        bright = Quartz.CGColorCreateGenericRGB(0.35, 0.65, 1.0, 1.0)
+        gradient.setColors_([clear, bright, clear])
+        gradient.setLocations_([0.0, 0.5, 1.0])
+        gradient.setStartPoint_(Quartz.CGPointMake(0.0, 0.5))
+        gradient.setEndPoint_(Quartz.CGPointMake(1.0, 0.5))
+
+        layer.addSublayer_(gradient)
+        window._gradient = gradient
+
+        return window
+
+    # -- positioning ---------------------------------------------------------
+
+    def _position_top_center(self):
+        """Place the bar at the top center of the main screen."""
+        screen = AppKit.NSScreen.mainScreen()
+        if screen is None:
+            return
+        screen_frame = screen.frame()
+        x = screen_frame.origin.x + (screen_frame.size.width - self.BAR_WIDTH) / 2
+        y = (screen_frame.origin.y + screen_frame.size.height
+             - self.BAR_HEIGHT - self.TOP_OFFSET)
+        self.setFrameOrigin_(Foundation.NSMakePoint(x, y))
+
+    # -- animation -----------------------------------------------------------
+
+    def _start_animation(self):
+        """Start the repeating shimmer sweep."""
+        gradient = getattr(self, '_gradient', None)
+        if gradient is None:
+            return
+
+        anim = Quartz.CABasicAnimation.animationWithKeyPath_("locations")
+        # Sweep: concentrated highlight moves left → right
+        anim.setFromValue_([-0.3, -0.15, 0.0])
+        anim.setToValue_([1.0, 1.15, 1.3])
+        anim.setDuration_(1.0)
+        anim.setRepeatCount_(float('inf'))
+        anim.setTimingFunction_(
+            Quartz.CAMediaTimingFunction.functionWithName_(
+                Quartz.kCAMediaTimingFunctionEaseInEaseOut
+            )
+        )
+        gradient.addAnimation_forKey_(anim, "shimmer")
+
+    def _stop_animation(self):
+        """Stop the shimmer animation."""
+        gradient = getattr(self, '_gradient', None)
+        if gradient is None:
+            return
+        gradient.removeAnimationForKey_("shimmer")
+
+    # -- show / hide ---------------------------------------------------------
+
+    def show(self):
+        """Position at top center, show, and start animating."""
+        self._position_top_center()
+        self.orderFrontRegardless()
+        self._start_animation()
+
+    def hide(self):
+        """Stop animating and hide the window."""
+        self._stop_animation()
+        self.orderOut_(None)
+
+    # -- singleton -----------------------------------------------------------
+
+    @classmethod
+    def get_instance(cls):
+        """Get the singleton loading bar instance."""
+        if cls._instance is None:
+            cls._instance = cls.create()
+        return cls._instance
+
+
+class LoadingBarManager:
+    """Manages the top-of-screen loading bar."""
+
+    def __init__(self):
+        self._is_visible = False
+
+    def show(self):
+        """Show the loading bar."""
+        bar = LoadingBar.get_instance()
+        if bar:
+            bar.show()
+            self._is_visible = True
+
+    def hide(self):
+        """Hide the loading bar."""
+        if self._is_visible:
+            bar = LoadingBar.get_instance()
+            if bar:
+                bar.hide()
+            self._is_visible = False
+
+    def is_visible(self) -> bool:
+        """Check if the loading bar is currently visible."""
         return self._is_visible

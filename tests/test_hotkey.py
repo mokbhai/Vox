@@ -21,6 +21,7 @@ from vox.hotkey import (
     kCGKeyboardEventKeycode,
     kCGKeyboardEventAutorepeat,
 )
+from vox.api import RewriteMode
 
 
 class TestKeyCodeMapping:
@@ -201,10 +202,7 @@ class TestHotKeyManager:
         manager = HotKeyManager()
         assert manager._callback is None
         assert manager._enabled is True
-        assert manager._modifiers_str == "option"
-        assert manager._key_str == "v"
-        assert manager._target_key_code == 0
-        assert manager._target_modifiers == 0
+        assert manager._hotkey_targets == []
         assert manager._is_registered is False
         assert manager._tap is None
         assert manager._tap_callback is None
@@ -219,12 +217,22 @@ class TestHotKeyManager:
         manager.set_callback(callback)
         assert manager._callback == callback
 
-    def test_set_hotkey(self):
-        """Test setting the hot key combination."""
+    def test_set_hotkeys(self):
+        """Test setting multiple hot key targets."""
         manager = HotKeyManager()
-        manager.set_hotkey('cmd+shift', 'r')
-        assert manager._modifiers_str == 'cmd+shift'
-        assert manager._key_str == 'r'
+        configs = [
+            ("cmd+shift", "g", RewriteMode.FIX_GRAMMAR),
+            ("cmd+shift", "p", RewriteMode.PROFESSIONAL),
+            ("cmd+shift", "", RewriteMode.CONCISE),  # empty key, should be skipped
+        ]
+        manager.set_hotkeys(configs)
+        assert len(manager._hotkey_targets) == 2
+        # First target: cmd+shift+g -> FIX_GRAMMAR
+        assert manager._hotkey_targets[0][0] == KEY_CODES['g']
+        assert manager._hotkey_targets[0][2] == RewriteMode.FIX_GRAMMAR
+        # Second target: cmd+shift+p -> PROFESSIONAL
+        assert manager._hotkey_targets[1][0] == KEY_CODES['p']
+        assert manager._hotkey_targets[1][2] == RewriteMode.PROFESSIONAL
 
     def test_set_enabled_true(self):
         """Test enabling the hot key manager."""
@@ -318,6 +326,7 @@ class TestHotKeyManager:
         """Test registering without permission shows dialog."""
         manager = HotKeyManager()
         manager._enabled = True
+        manager.set_hotkeys([("cmd", "d", RewriteMode.FIX_GRAMMAR)])
 
         with patch('vox.hotkey.has_accessibility_permission', return_value=False), \
              patch('vox.hotkey.request_accessibility_permission', return_value=False), \
@@ -330,7 +339,7 @@ class TestHotKeyManager:
         """Test successful hot key registration via CGEventTap."""
         manager = HotKeyManager()
         manager._enabled = True
-        manager.set_hotkey('cmd', 'd')
+        manager.set_hotkeys([("cmd", "d", RewriteMode.FIX_GRAMMAR)])
 
         mock_tap = MagicMock()
         mock_rls = MagicMock()
@@ -354,19 +363,29 @@ class TestHotKeyManager:
         """Test hot key registration when CGEventTapCreate returns None."""
         manager = HotKeyManager()
         manager._enabled = True
+        manager.set_hotkeys([("cmd", "d", RewriteMode.FIX_GRAMMAR)])
 
         with patch('vox.hotkey.has_accessibility_permission', return_value=True), \
              patch('vox.hotkey.Quartz') as mock_quartz, \
-             patch.object(manager, '_show_accessibility_dialog') as mock_dialog:
+             patch.object(manager, '_show_input_monitoring_dialog') as mock_dialog:
             mock_quartz.CGEventTapCreate.return_value = None
             result = manager.register_hotkey()
             assert result is False
             mock_dialog.assert_called_once()
 
+    def test_register_hotkey_no_targets(self):
+        """Test registering with no targets returns False."""
+        manager = HotKeyManager()
+        manager._enabled = True
+        # No targets set
+        result = manager.register_hotkey()
+        assert result is False
+
     def test_register_hotkey_exception_handling(self):
         """Test register_hotkey handles exceptions gracefully."""
         manager = HotKeyManager()
         manager._enabled = True
+        manager.set_hotkeys([("cmd", "d", RewriteMode.FIX_GRAMMAR)])
 
         with patch('vox.hotkey.has_accessibility_permission', return_value=True), \
              patch('vox.hotkey.Quartz') as mock_quartz:
@@ -380,8 +399,7 @@ class TestHandleCGEvent:
 
     def _make_manager(self):
         manager = HotKeyManager()
-        manager._target_key_code = 0x02  # D
-        manager._target_modifiers = kCGEventFlagMaskCommand
+        manager.set_hotkeys([("cmd", "d", RewriteMode.FIX_GRAMMAR)])
         manager._enabled = True
         manager._callback = MagicMock()
         manager._tap = MagicMock()
@@ -487,7 +505,11 @@ class TestHandleCGEvent:
 
             result = manager._handle_cg_event(None, kCGEventKeyDown, mock_event)
             assert result is mock_event
-            mock_queue.addOperationWithBlock_.assert_called_once_with(manager._callback)
+            mock_queue.addOperationWithBlock_.assert_called_once()
+            # Call the dispatched lambda and verify it calls the callback with the mode
+            dispatched_fn = mock_queue.addOperationWithBlock_.call_args[0][0]
+            dispatched_fn()
+            manager._callback.assert_called_once_with(RewriteMode.FIX_GRAMMAR)
 
     def test_handle_disabled_manager_does_not_dispatch(self):
         """Test that disabled manager does not dispatch callback."""
@@ -546,7 +568,7 @@ class TestShowAccessibilityDialog:
             mock_workspace.openURL_.assert_called_once()
 
     def test_show_accessibility_dialog_cancels(self):
-        """Test dialog cancels when second button clicked."""
+        """Test dialog cancels when third button (Cancel) clicked."""
         manager = HotKeyManager()
 
         with patch('vox.hotkey.AppKit') as mock_appkit:
@@ -555,7 +577,7 @@ class TestShowAccessibilityDialog:
             mock_appkit.NSAlertFirstButtonReturn = 1000
             mock_appkit.NSAlertSecondButtonReturn = 1001
             mock_appkit.NSAlertStyleWarning = 2
-            mock_alert.runModal.return_value = 1001  # Second button
+            mock_alert.runModal.return_value = 1002  # Third button (Cancel)
 
             mock_workspace = MagicMock()
             mock_appkit.NSWorkspace.sharedWorkspace.return_value = mock_workspace

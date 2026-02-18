@@ -152,20 +152,20 @@ def parse_modifiers(modifiers_str: str) -> int:
 
 class HotKeyManager:
     """
-    Manages global hot key using Quartz CGEventTap.
+    Manages global hot keys using Quartz CGEventTap.
 
     The event tap runs on a dedicated background thread with its own CFRunLoop,
     matching the pattern used by pynput's proven macOS keyboard listener.
+
+    Supports multiple hotkey targets, each mapped to a RewriteMode.
     """
 
     def __init__(self):
         """Initialize the hot key manager."""
         self._callback = None
         self._enabled = True
-        self._modifiers_str = "option"
-        self._key_str = "v"
-        self._target_key_code = 0
-        self._target_modifiers = 0
+        # List of (key_code, mod_mask, mode) tuples
+        self._hotkey_targets = []
         self._is_registered = False
         # CGEventTap state
         self._tap = None
@@ -175,27 +175,41 @@ class HotKeyManager:
         self._tap_thread = None
 
     def set_callback(self, callback):
-        """Set the callback function."""
+        """Set the callback function. Called with (mode) argument."""
         self._callback = callback
 
-    def set_hotkey(self, modifiers: str, key: str):
-        """Set the hot key combination."""
-        self._modifiers_str = modifiers
-        self._key_str = key
+    def set_hotkeys(self, configs):
+        """Set multiple hotkey targets.
+
+        Args:
+            configs: List of (modifiers_str, key_str, mode) tuples.
+                     Entries with empty key_str are skipped.
+        """
+        self._hotkey_targets = []
+        for modifiers_str, key_str, mode in configs:
+            if not key_str:
+                continue
+            key_code = get_key_code(key_str)
+            mod_mask = parse_modifiers(modifiers_str)
+            self._hotkey_targets.append((key_code, mod_mask, mode))
 
     def set_enabled(self, enabled: bool):
-        """Enable or disable the hot key."""
+        """Enable or disable the hot keys."""
         self._enabled = enabled
         if not enabled and self._is_registered:
             self.unregister_hotkey()
 
     def register_hotkey(self) -> bool:
-        """Register the global hot key using CGEventTap."""
+        """Register the global hot keys using CGEventTap."""
         if not self._enabled:
             return False
 
         if self._is_registered:
             return True
+
+        if not self._hotkey_targets:
+            print("No hotkey targets configured, skipping registration", flush=True)
+            return False
 
         print(f"Accessibility permission: {has_accessibility_permission()}", flush=True)
 
@@ -207,17 +221,16 @@ class HotKeyManager:
                 return False
 
         try:
-            self._target_key_code = get_key_code(self._key_str)
-            self._target_modifiers = parse_modifiers(self._modifiers_str)
+            for key_code, mod_mask, mode in self._hotkey_targets:
+                mod_str = modifier_mask_to_string(mod_mask)
+                key_char = KEY_CODE_TO_CHAR.get(key_code, "?")
+                print(
+                    f"Registering hotkey: {mod_str}+{key_char} -> {mode.value} "
+                    f"(key={key_code}, mod={mod_mask})",
+                    flush=True,
+                )
 
-            print(
-                f"Setting up CGEventTap hot key: {self._modifiers_str}+{self._key_str} "
-                f"(key={self._target_key_code}, mod={self._target_modifiers})",
-                flush=True,
-            )
-
-            # Build the callback — capture self directly (prevented from GC
-            # by storing in self._tap_callback)
+            # Build the callback
             def tap_callback(proxy, event_type, event, user_info):
                 return self._handle_cg_event(proxy, event_type, event)
 
@@ -230,7 +243,7 @@ class HotKeyManager:
                 | Quartz.CGEventMaskBit(Quartz.kCGEventFlagsChanged)
             )
 
-            # Create the event tap — using Quartz module directly (proven pattern)
+            # Create the event tap
             tap = Quartz.CGEventTapCreate(
                 Quartz.kCGSessionEventTap,
                 Quartz.kCGHeadInsertEventTap,
@@ -251,12 +264,12 @@ class HotKeyManager:
 
             self._tap = tap
 
-            # Create run loop source — use None for default allocator (pynput pattern)
+            # Create run loop source
             self._run_loop_source = Quartz.CFMachPortCreateRunLoopSource(
                 None, tap, 0
             )
 
-            # Start background thread with its own CFRunLoop (pynput pattern)
+            # Start background thread with its own CFRunLoop
             self._tap_thread = threading.Thread(
                 target=self._run_tap_loop,
                 name="VoxHotkeyTap",
@@ -265,7 +278,7 @@ class HotKeyManager:
             self._tap_thread.start()
 
             self._is_registered = True
-            print(f"Hot key registered: {self._modifiers_str}+{self._key_str}", flush=True)
+            print(f"Hot keys registered ({len(self._hotkey_targets)} targets)", flush=True)
             return True
 
         except Exception as e:
@@ -302,24 +315,27 @@ class HotKeyManager:
                 return event
 
             keycode = Quartz.CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode)
-            if keycode != self._target_key_code:
-                return event
 
             # Skip key-repeat events
             autorepeat = Quartz.CGEventGetIntegerValueField(event, kCGKeyboardEventAutorepeat)
             if autorepeat:
                 return event
 
-            # Check modifier flags — only compare the four standard modifiers
+            # Check modifier flags
             flags = Quartz.CGEventGetFlags(event)
             relevant_flags = flags & ALL_MODIFIER_FLAGS_MASK
-            if relevant_flags != self._target_modifiers:
-                return event
 
-            # Hot key matched — dispatch callback to the main thread
-            if self._enabled and self._callback:
-                print(f"Hot key triggered: {self._modifiers_str}+{self._key_str}", flush=True)
-                AppKit.NSOperationQueue.mainQueue().addOperationWithBlock_(self._callback)
+            # Check against all registered hotkey targets
+            for target_key_code, target_modifiers, mode in self._hotkey_targets:
+                if keycode == target_key_code and relevant_flags == target_modifiers:
+                    if self._enabled and self._callback:
+                        key_char = KEY_CODE_TO_CHAR.get(keycode, "?")
+                        print(f"Hot key triggered: {mode.value} ({key_char})", flush=True)
+                        # Capture mode in lambda default arg to avoid closure issues
+                        AppKit.NSOperationQueue.mainQueue().addOperationWithBlock_(
+                            lambda m=mode: self._callback(m)
+                        )
+                    return event
 
             return event
 

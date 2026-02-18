@@ -29,6 +29,8 @@ class TestConfigConstants:
         assert "base_url" in DEFAULT_CONFIG
         assert "auto_start" in DEFAULT_CONFIG
         assert "toast_position" in DEFAULT_CONFIG
+        assert "hotkeys_enabled" in DEFAULT_CONFIG
+        assert "hotkeys" in DEFAULT_CONFIG
 
     def test_default_config_values(self):
         """Test DEFAULT_CONFIG has correct default values."""
@@ -36,6 +38,26 @@ class TestConfigConstants:
         assert DEFAULT_CONFIG["base_url"] is None
         assert DEFAULT_CONFIG["auto_start"] is False
         assert DEFAULT_CONFIG["toast_position"] == "cursor"
+        assert DEFAULT_CONFIG["hotkeys_enabled"] is True
+
+    def test_default_hotkeys_structure(self):
+        """Test DEFAULT_CONFIG hotkeys has all modes."""
+        hotkeys = DEFAULT_CONFIG["hotkeys"]
+        assert "fix_grammar" in hotkeys
+        assert "professional" in hotkeys
+        assert "concise" in hotkeys
+        assert "friendly" in hotkeys
+        for mode_key, hk in hotkeys.items():
+            assert "modifiers" in hk
+            assert "key" in hk
+
+    def test_default_hotkeys_values(self):
+        """Test DEFAULT_CONFIG hotkeys have correct defaults."""
+        hotkeys = DEFAULT_CONFIG["hotkeys"]
+        assert hotkeys["fix_grammar"] == {"modifiers": "cmd+shift", "key": "g"}
+        assert hotkeys["professional"] == {"modifiers": "cmd+shift", "key": "p"}
+        assert hotkeys["concise"] == {"modifiers": "cmd+shift", "key": "c"}
+        assert hotkeys["friendly"] == {"modifiers": "cmd+shift", "key": "f"}
 
 
 class TestConfig:
@@ -189,56 +211,140 @@ class TestConfigHotkey:
                 config = Config()
                 yield config
 
-    def test_hotkey_enabled_default(self, temp_config):
-        """Test default hotkey_enabled value."""
-        assert temp_config.hotkey_enabled is True
+    def test_hotkeys_enabled_default(self, temp_config):
+        """Test default hotkeys_enabled value."""
+        assert temp_config.hotkeys_enabled is True
 
-    def test_hotkey_enabled_getter_setter(self, temp_config):
-        """Test hotkey_enabled getter and setter."""
-        temp_config.hotkey_enabled = False
-        assert temp_config.hotkey_enabled is False
+    def test_hotkeys_enabled_getter_setter(self, temp_config):
+        """Test hotkeys_enabled getter and setter."""
+        temp_config.hotkeys_enabled = False
+        assert temp_config.hotkeys_enabled is False
 
-        temp_config.hotkey_enabled = True
-        assert temp_config.hotkey_enabled is True
+        temp_config.hotkeys_enabled = True
+        assert temp_config.hotkeys_enabled is True
 
-    def test_hotkey_modifiers_default(self, temp_config):
-        """Test default hotkey_modifiers value."""
-        assert temp_config.hotkey_modifiers == "cmd"
+    def test_get_mode_hotkey_defaults(self, temp_config):
+        """Test get_mode_hotkey returns defaults for each mode."""
+        hk = temp_config.get_mode_hotkey("fix_grammar")
+        assert hk == {"modifiers": "cmd+shift", "key": "g"}
 
-    def test_hotkey_modifiers_getter_setter(self, temp_config):
-        """Test hotkey_modifiers getter and setter."""
-        temp_config.hotkey_modifiers = "option"
-        assert temp_config.hotkey_modifiers == "option"
+        hk = temp_config.get_mode_hotkey("professional")
+        assert hk == {"modifiers": "cmd+shift", "key": "p"}
 
-        temp_config.hotkey_modifiers = "cmd+shift"
-        assert temp_config.hotkey_modifiers == "cmd+shift"
+        hk = temp_config.get_mode_hotkey("concise")
+        assert hk == {"modifiers": "cmd+shift", "key": "c"}
 
-    def test_hotkey_key_default(self, temp_config):
-        """Test default hotkey_key value."""
-        assert temp_config.hotkey_key == "d"
+        hk = temp_config.get_mode_hotkey("friendly")
+        assert hk == {"modifiers": "cmd+shift", "key": "f"}
 
-    def test_hotkey_key_getter_setter(self, temp_config):
-        """Test hotkey_key getter and setter."""
-        temp_config.hotkey_key = "v"
-        assert temp_config.hotkey_key == "v"
+    def test_get_mode_hotkey_unknown_mode(self, temp_config):
+        """Test get_mode_hotkey returns empty for unknown mode."""
+        hk = temp_config.get_mode_hotkey("nonexistent")
+        assert hk == {"modifiers": "", "key": ""}
 
-        # Test case normalization
-        temp_config.hotkey_key = "R"
-        assert temp_config.hotkey_key == "r"
+    def test_set_mode_hotkey(self, temp_config):
+        """Test set_mode_hotkey updates and persists."""
+        temp_config.set_mode_hotkey("fix_grammar", "option", "r")
+        hk = temp_config.get_mode_hotkey("fix_grammar")
+        assert hk == {"modifiers": "option", "key": "r"}
+
+        # Other modes unchanged
+        hk = temp_config.get_mode_hotkey("professional")
+        assert hk == {"modifiers": "cmd+shift", "key": "p"}
+
+    def test_set_mode_hotkey_empty_key(self, temp_config):
+        """Test set_mode_hotkey with empty key (cleared shortcut)."""
+        temp_config.set_mode_hotkey("concise", "cmd", "")
+        hk = temp_config.get_mode_hotkey("concise")
+        assert hk == {"modifiers": "cmd", "key": ""}
+
+    def test_set_mode_hotkey_case_normalization(self, temp_config):
+        """Test set_mode_hotkey normalizes key to lowercase."""
+        temp_config.set_mode_hotkey("friendly", "cmd+shift", "F")
+        hk = temp_config.get_mode_hotkey("friendly")
+        assert hk["key"] == "f"
+
+    def test_get_all_hotkeys(self, temp_config):
+        """Test get_all_hotkeys returns all modes."""
+        all_hk = temp_config.get_all_hotkeys()
+        assert "fix_grammar" in all_hk
+        assert "professional" in all_hk
+        assert "concise" in all_hk
+        assert "friendly" in all_hk
+        assert all_hk["fix_grammar"] == {"modifiers": "cmd+shift", "key": "g"}
+
+    def test_get_all_hotkeys_after_modification(self, temp_config):
+        """Test get_all_hotkeys reflects modifications."""
+        temp_config.set_mode_hotkey("fix_grammar", "option", "x")
+        all_hk = temp_config.get_all_hotkeys()
+        assert all_hk["fix_grammar"] == {"modifiers": "option", "key": "x"}
+        # Others still default
+        assert all_hk["professional"] == {"modifiers": "cmd+shift", "key": "p"}
 
     def test_hotkey_config_persisted(self, temp_config):
-        """Test hot key settings are persisted."""
-        temp_config.hotkey_enabled = False
-        temp_config.hotkey_modifiers = "option"
-        temp_config.hotkey_key = "r"
+        """Test hot key settings are persisted across loads."""
+        temp_config.hotkeys_enabled = False
+        temp_config.set_mode_hotkey("fix_grammar", "option", "r")
 
-        # Load new config instance
-        reset_config()
-        new_config = Config()
+        # Reload config
+        temp_config.load()
 
-        assert new_config.hotkey_enabled is False
-        assert new_config.hotkey_modifiers == "option"
-        assert new_config.hotkey_key == "r"
+        assert temp_config.hotkeys_enabled is False
+        hk = temp_config.get_mode_hotkey("fix_grammar")
+        assert hk == {"modifiers": "option", "key": "r"}
+
+    def test_migration_from_old_format(self, temp_config):
+        """Test migration from old single-hotkey format to per-mode format."""
+        # Write old-format config directly
+        old_config = {
+            "model": "gpt-4o",
+            "hotkey_enabled": True,
+            "hotkey_modifiers": "option",
+            "hotkey_key": "v",
+        }
+        with open(temp_config.config_file, "w") as f:
+            yaml.dump(old_config, f)
+
+        # Reload to trigger migration
+        temp_config.load()
+
+        # hotkeys_enabled should be migrated from hotkey_enabled
+        assert temp_config.hotkeys_enabled is True
+
+        # fix_grammar should have the old hotkey values
+        hk = temp_config.get_mode_hotkey("fix_grammar")
+        assert hk == {"modifiers": "option", "key": "v"}
+
+        # Other modes should have defaults
+        hk = temp_config.get_mode_hotkey("professional")
+        assert hk == {"modifiers": "cmd+shift", "key": "p"}
+
+        # Old keys should not remain in saved config
+        with open(temp_config.config_file, "r") as f:
+            data = yaml.safe_load(f)
+        assert "hotkey_key" not in data
+        assert "hotkey_modifiers" not in data
+        assert "hotkey_enabled" not in data
+        assert "hotkeys" in data
+        assert "hotkeys_enabled" in data
+
+    def test_migration_preserves_other_config(self, temp_config):
+        """Test migration preserves non-hotkey config values."""
+        old_config = {
+            "model": "gpt-4o",
+            "base_url": "https://custom.api",
+            "hotkey_enabled": False,
+            "hotkey_modifiers": "cmd",
+            "hotkey_key": "d",
+        }
+        with open(temp_config.config_file, "w") as f:
+            yaml.dump(old_config, f)
+
+        temp_config.load()
+
+        assert temp_config.model == "gpt-4o"
+        assert temp_config.base_url == "https://custom.api"
+        assert temp_config.hotkeys_enabled is False
 
 
 class TestConfigAutoStart:
