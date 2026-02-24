@@ -90,8 +90,8 @@ class Config:
                     self._config.update(user_config)
                     self.save()
                 else:
-                    # Clean up any leftover old keys
-                    for old_key in ("hotkey_enabled", "hotkey_modifiers", "hotkey_key"):
+                    # Clean up any leftover old keys (including api_key for security)
+                    for old_key in ("hotkey_enabled", "hotkey_modifiers", "hotkey_key", "api_key"):
                         user_config.pop(old_key, None)
 
                     # Merge hotkeys dict carefully (keep defaults for missing modes)
@@ -109,8 +109,10 @@ class Config:
     def save(self):
         """Save current configuration to file."""
         try:
+            # Create a copy of config without api_key to prevent plaintext storage
+            config_to_save = {k: v for k, v in self._config.items() if k != "api_key"}
             with open(self.config_file, "w") as f:
-                yaml.dump(self._config, f, default_flow_style=False)
+                yaml.dump(config_to_save, f, default_flow_style=False)
         except Exception as e:
             print(f"Error saving config: {e}")
 
