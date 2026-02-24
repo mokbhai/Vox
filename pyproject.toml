@@ -7,11 +7,13 @@ requires-python = ">=3.11"
 dependencies = [
     "cairosvg>=2.8.2",
     "openai>=2.16.0",
+    "pyaudio>=0.2.14",
     "pyinstaller>=6.18.0",
     "pyobjc-core>=12.1",
     "pyobjc-framework-applicationservices>=12.1",
     "pyobjc-framework-cocoa>=12.1",
     "pyobjc-framework-quartz>=12.1",
+    "pywhispercpp>=1.2.0",
     "pyyaml>=6.0.3",
 ]
 

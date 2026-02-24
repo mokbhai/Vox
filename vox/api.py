@@ -101,13 +101,14 @@ class RewriteAPI:
         """
         self.model = model
 
-    def rewrite(self, text: str, mode: RewriteMode) -> str:
+    def rewrite(self, text: str, mode: RewriteMode, thinking_mode: bool = False) -> str:
         """
         Rewrite text using the specified mode.
 
         Args:
             text: The text to rewrite.
             mode: The rewrite mode to apply.
+            thinking_mode: If True, use extended thinking for more thorough rewriting.
 
         Returns:
             The rewritten text.
@@ -119,11 +120,25 @@ class RewriteAPI:
             return text
 
         try:
-            print(f"API call: model={self.model}, base_url={self.base_url}", flush=True)
+            print(f"API call: model={self.model}, base_url={self.base_url}, thinking_mode={thinking_mode}", flush=True)
+
+            # Build system prompt with thinking mode enhancement
+            system_prompt = SYSTEM_PROMPTS[mode]
+            if thinking_mode:
+                system_prompt = (
+                    f"{SYSTEM_PROMPTS[mode]}\n\n"
+                    "Before providing your final answer, think through this step-by-step:\n"
+                    "1. Analyze the original text's structure, tone, and key points\n"
+                    "2. Identify areas that need improvement based on the rewrite goal\n"
+                    "3. Consider multiple ways to improve the text\n"
+                    "4. Select the best approach and apply it\n"
+                    "5. Return only the final rewritten text without explanations"
+                )
+
             response = self.client.chat.completions.create(
                 model=self.model,
                 messages=[
-                    {"role": "system", "content": SYSTEM_PROMPTS[mode]},
+                    {"role": "system", "content": system_prompt},
                     {"role": "user", "content": text},
                 ],
                 temperature=0.7,

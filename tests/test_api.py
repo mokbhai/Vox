@@ -123,6 +123,89 @@ class TestRewriteAPI:
                 assert messages[0]["role"] == "system"
                 assert messages[0]["content"] == SYSTEM_PROMPTS[mode]
 
+    def test_rewrite_with_thinking_mode_false(self):
+        """Test that rewrite with thinking_mode=False uses standard prompt."""
+        with patch("vox.api.OpenAI") as mock_openai:
+            mock_client = MagicMock()
+            mock_response = MagicMock()
+            mock_response.choices = [MagicMock()]
+            mock_response.choices[0].message.content = "Result"
+            mock_client.chat.completions.create.return_value = mock_response
+            mock_openai.return_value = mock_client
+
+            api = RewriteAPI("test-key")
+            api.rewrite("test", RewriteMode.FIX_GRAMMAR, thinking_mode=False)
+
+            call_args = mock_client.chat.completions.create.call_args
+            messages = call_args[1]["messages"]
+            # Should use standard prompt without enhancement
+            assert messages[0]["content"] == SYSTEM_PROMPTS[RewriteMode.FIX_GRAMMAR]
+
+    def test_rewrite_with_thinking_mode_true(self):
+        """Test that rewrite with thinking_mode=True uses enhanced prompt."""
+        with patch("vox.api.OpenAI") as mock_openai:
+            mock_client = MagicMock()
+            mock_response = MagicMock()
+            mock_response.choices = [MagicMock()]
+            mock_response.choices[0].message.content = "Result"
+            mock_client.chat.completions.create.return_value = mock_response
+            mock_openai.return_value = mock_client
+
+            api = RewriteAPI("test-key")
+            api.rewrite("test", RewriteMode.PROFESSIONAL, thinking_mode=True)
+
+            call_args = mock_client.chat.completions.create.call_args
+            messages = call_args[1]["messages"]
+            system_content = messages[0]["content"]
+
+            # Should contain original prompt
+            assert SYSTEM_PROMPTS[RewriteMode.PROFESSIONAL] in system_content
+            # Should contain thinking mode enhancements
+            assert "step-by-step" in system_content
+            assert "Analyze the original text" in system_content
+            assert "Return only the final rewritten text" in system_content
+
+    def test_rewrite_thinking_mode_default_parameter(self):
+        """Test that thinking_mode defaults to False."""
+        with patch("vox.api.OpenAI") as mock_openai:
+            mock_client = MagicMock()
+            mock_response = MagicMock()
+            mock_response.choices = [MagicMock()]
+            mock_response.choices[0].message.content = "Result"
+            mock_client.chat.completions.create.return_value = mock_response
+            mock_openai.return_value = mock_client
+
+            api = RewriteAPI("test-key")
+            # Call without thinking_mode parameter
+            api.rewrite("test", RewriteMode.CONCISE)
+
+            call_args = mock_client.chat.completions.create.call_args
+            messages = call_args[1]["messages"]
+            # Should use standard prompt (no enhancement)
+            assert messages[0]["content"] == SYSTEM_PROMPTS[RewriteMode.CONCISE]
+
+    def test_rewrite_thinking_mode_all_modes(self):
+        """Test thinking mode works with all rewrite modes."""
+        with patch("vox.api.OpenAI") as mock_openai:
+            mock_client = MagicMock()
+            mock_response = MagicMock()
+            mock_response.choices = [MagicMock()]
+            mock_response.choices[0].message.content = "Result"
+            mock_client.chat.completions.create.return_value = mock_response
+            mock_openai.return_value = mock_client
+
+            api = RewriteAPI("test-key")
+
+            for mode in RewriteMode:
+                api.rewrite("test", mode, thinking_mode=True)
+                call_args = mock_client.chat.completions.create.call_args
+                messages = call_args[1]["messages"]
+                system_content = messages[0]["content"]
+
+                # Each mode should have its base prompt plus thinking enhancement
+                assert SYSTEM_PROMPTS[mode] in system_content
+                assert "step-by-step" in system_content
+
     def test_get_display_name(self):
         """Test get_display_name static method."""
         assert RewriteAPI.get_display_name(RewriteMode.FIX_GRAMMAR) == "Fix Grammar"

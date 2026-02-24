@@ -2,11 +2,27 @@
 
 This file provides guidance to Claude Code (claude.ai/code) when working with code in this repository.
 
+## Documentation
+
+Comprehensive documentation is available in the `docs/` directory. See **[docs/README.md](docs/README.md)** for an index.
+
+| Document | Purpose |
+|----------|---------|
+| **[docs/PYTHON_PATTERNS.md](docs/PYTHON_PATTERNS.md)** | Python conventions, imports, type hints, properties, threading |
+| **[docs/PYOBJC_GUIDE.md](docs/PYOBJC_GUIDE.md)** | PyObjC patterns, NSObject subclasses, Quartz events, Services API |
+| **[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)** | System design, data flows, module responsibilities |
+| **[docs/TESTING.md](docs/TESTING.md)** | Test structure, mocking PyObjC, fixtures |
+| **[docs/DEVELOPMENT.md](docs/DEVELOPMENT.md)** | Setup, common tasks, building, debugging |
+
+**Important**: When making code changes, follow the patterns in `docs/PYTHON_PATTERNS.md` and `docs/PYOBJC_GUIDE.md`.
+
 ## Project Overview
 
 Vox is a macOS menu bar application that provides AI-powered text rewriting through contextual menu integration. Users select text in any macOS app, right-click, and choose from AI rewrite presets (Fix Grammar, Professional, Concise, Friendly). The rewritten text replaces the selection in-place.
 
 ## Architecture
+
+> See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for detailed architecture documentation.
 
 ### Core Modules
 
@@ -79,7 +95,58 @@ make fmt
 
 ## Development Notes
 
+> See [docs/DEVELOPMENT.md](docs/DEVELOPMENT.md) for development setup and common tasks.
+
 - After modifying service-related code, run `make flush` to refresh the macOS services cache
 - Service may take 1-2 seconds to appear after first install
 - The app runs with `LSUIElement: True` (no dock icon, only menu bar)
 - Bundle identifier: `com.voxapp.rewrite`
+
+## Code Patterns Quick Reference
+
+### PyObjC NSObject Subclass
+
+```python
+class MyObject(AppKit.NSObject):
+    def init(self):
+        self = objc.super(MyObject, self).init()
+        if self is None:
+            return None
+        # Initialize instance variables
+        return self
+```
+
+### Service Method
+
+```python
+@objc.typedSelector(b"v@:@@o^@")
+def myService_userData_error_(self, pasteboard, userData, error):
+    # Handle service call
+```
+
+### Background Thread with Main Thread Dispatch
+
+```python
+def _do_work():
+    result = api.call()
+    AppKit.NSOperationQueue.mainQueue().addOperationWithBlock_(
+        lambda: self._handle_result(result)
+    )
+
+threading.Thread(target=_do_work, daemon=True).start()
+```
+
+### Configuration Property
+
+```python
+@property
+def setting(self) -> str:
+    return self._config.get("setting", DEFAULT_CONFIG["setting"])
+
+@setting.setter
+def setting(self, value: str):
+    self._config["setting"] = value
+    self.save()
+```
+
+See [docs/PYTHON_PATTERNS.md](docs/PYTHON_PATTERNS.md) and [docs/PYOBJC_GUIDE.md](docs/PYOBJC_GUIDE.md) for complete documentation.

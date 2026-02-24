@@ -5,6 +5,7 @@ Uses CGEventTapCreate on a dedicated background thread with its own CFRunLoop,
 matching the proven pattern used by pynput's macOS keyboard listener.
 """
 import threading
+from typing import Callable, Optional, Tuple
 
 import AppKit
 import Quartz
@@ -60,6 +61,11 @@ KEY_CODES = {
     'z': 0x06,
     '0': 0x1D, '1': 0x12, '2': 0x13, '3': 0x14, '4': 0x15,
     '5': 0x17, '6': 0x16, '7': 0x1A, '8': 0x1C, '9': 0x19,
+    # Function keys F1-F20
+    'f1': 0x7A, 'f2': 0x78, 'f3': 0x63, 'f4': 0x76, 'f5': 0x60,
+    'f6': 0x61, 'f7': 0x62, 'f8': 0x64, 'f9': 0x65, 'f10': 0x6D,
+    'f11': 0x67, 'f12': 0x6F, 'f13': 0x69, 'f14': 0x6B, 'f15': 0x71,
+    'f16': 0x6A, 'f17': 0x40, 'f18': 0x4F, 'f19': 0x50, 'f20': 0x5A,
 }
 
 # Modifier flag constants (CGEvent values)
@@ -72,6 +78,8 @@ MODIFIER_FLAGS = {
     'control': kCGEventFlagMaskControl,
     'ctrl': kCGEventFlagMaskControl,
     'shift': kCGEventFlagMaskShift,
+    # 'fn' is handled at hardware level, no CGEvent flag
+    'fn': 0,
 }
 
 # Mask covering all four modifier bits we check
@@ -173,6 +181,10 @@ class HotKeyManager:
         self._run_loop_source = None
         self._run_loop = None
         self._tap_thread = None
+        # Speech hotkey state (press-and-hold)
+        self._speech_hotkey: Optional[Tuple[int, int]] = None  # (key_code, mod_mask)
+        self._speech_callback: Optional[Callable[[bool], None]] = None
+        self._speech_key_pressed: bool = False
 
     def set_callback(self, callback):
         """Set the callback function. Called with (mode) argument."""
@@ -193,11 +205,34 @@ class HotKeyManager:
             mod_mask = parse_modifiers(modifiers_str)
             self._hotkey_targets.append((key_code, mod_mask, mode))
 
+    def set_speech_hotkey(self, modifiers_str: str, key_str: str, callback):
+        """Set the speech hotkey with press-and-hold callback.
+
+        Args:
+            modifiers_str: Modifier string (e.g. "fn").
+            key_str: Key character (e.g. "f13").
+            callback: Callback function called with is_keydown (bool) argument.
+        """
+        if not key_str:
+            self._speech_hotkey = None
+            self._speech_callback = None
+            return
+
+        key_code = get_key_code(key_str)
+        mod_mask = parse_modifiers(modifiers_str)
+        self._speech_hotkey = (key_code, mod_mask)
+        self._speech_callback = callback
+        self._speech_key_pressed = False
+
     def set_enabled(self, enabled: bool):
         """Enable or disable the hot keys."""
         self._enabled = enabled
         if not enabled and self._is_registered:
             self.unregister_hotkey()
+
+    def is_registered(self) -> bool:
+        """Check if hotkeys are currently registered."""
+        return self._is_registered
 
     def register_hotkey(self) -> bool:
         """Register the global hot keys using CGEventTap."""
@@ -244,10 +279,11 @@ class HotKeyManager:
             )
 
             # Create the event tap
+            # Use Default (not ListenOnly) to allow event suppression when hotkey matches
             tap = Quartz.CGEventTapCreate(
                 Quartz.kCGSessionEventTap,
                 Quartz.kCGHeadInsertEventTap,
-                Quartz.kCGEventTapOptionListenOnly,
+                Quartz.kCGEventTapOptionDefault,
                 event_mask,
                 tap_callback,
                 None,
@@ -311,6 +347,47 @@ class HotKeyManager:
             if event_type == kCGEventTapDisabledByUserInput:
                 return event
 
+            # Handle speech hotkey (press-and-hold)
+            if self._speech_hotkey and self._speech_callback:
+                keycode = Quartz.CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode)
+                flags = Quartz.CGEventGetFlags(event)
+                relevant_flags = flags & ALL_MODIFIER_FLAGS_MASK
+
+                target_key_code, target_modifiers = self._speech_hotkey
+
+                if keycode == target_key_code and relevant_flags == target_modifiers:
+                    if event_type == Quartz.kCGEventKeyDown:
+                        # Skip key-repeat events
+                        autorepeat = Quartz.CGEventGetIntegerValueField(
+                            event, kCGKeyboardEventAutorepeat
+                        )
+                        if autorepeat:
+                            return None
+
+                        if not self._speech_key_pressed and self._enabled:
+                            self._speech_key_pressed = True
+                            print("Speech hotkey pressed", flush=True)
+                            # Capture callback by value to avoid race condition
+                            callback = self._speech_callback
+                            if callback:
+                                AppKit.NSOperationQueue.mainQueue().addOperationWithBlock_(
+                                    lambda cb=callback: cb(True)
+                                )
+                        return None  # Suppress the event
+
+                    elif event_type == Quartz.kCGEventKeyUp:
+                        if self._speech_key_pressed:
+                            self._speech_key_pressed = False
+                            print("Speech hotkey released", flush=True)
+                            # Capture callback by value to avoid race condition
+                            callback = self._speech_callback
+                            if callback:
+                                AppKit.NSOperationQueue.mainQueue().addOperationWithBlock_(
+                                    lambda cb=callback: cb(False)
+                                )
+                        return None  # Suppress the event
+
+            # Handle regular hotkeys (keydown only)
             if event_type != Quartz.kCGEventKeyDown:
                 return event
 
@@ -335,7 +412,8 @@ class HotKeyManager:
                         AppKit.NSOperationQueue.mainQueue().addOperationWithBlock_(
                             lambda m=mode: self._callback(m)
                         )
-                    return event
+                    # Return None to suppress the event and prevent it from reaching other apps
+                    return None
 
             return event
 

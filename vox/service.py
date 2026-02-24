@@ -97,9 +97,13 @@ class ServiceProvider(AppKit.NSObject):
             mode_name = RewriteAPI.get_display_name(mode)
             self._toast_manager.show(f"{mode_name} with Vox...")
 
+            # Get thinking mode from config
+            config = get_config()
+            thinking_mode = config.thinking_mode
+
             # Process the text
             print("DEBUG: calling API...", flush=True)
-            result = api_client.rewrite(text, mode)
+            result = api_client.rewrite(text, mode, thinking_mode)
             print(f"DEBUG: API result={result!r}", flush=True)
 
             # Write result back to pasteboard

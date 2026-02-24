@@ -17,12 +17,19 @@ DEFAULT_CONFIG = {
     "base_url": None,  # Custom OpenAI-compatible API base URL
     "auto_start": False,
     "toast_position": "cursor",  # or "top-right", "top-center"
+    "thinking_mode": False,  # Enable extended thinking for rewrites
     "hotkeys_enabled": True,
     "hotkeys": {
         "fix_grammar":  {"modifiers": "cmd+shift", "key": "g"},
         "professional": {"modifiers": "cmd+shift", "key": "p"},
         "concise":      {"modifiers": "cmd+shift", "key": "c"},
         "friendly":     {"modifiers": "cmd+shift", "key": "f"},
+    },
+    "speech": {
+        "enabled": True,
+        "model": "base",
+        "language": "auto",  # or "en", "es", etc.
+        "hotkey": {"modifiers": "fn", "key": "f13"},
     },
 }
 
@@ -153,6 +160,17 @@ class Config:
         self.save()
 
     @property
+    def thinking_mode(self) -> bool:
+        """Get whether thinking mode is enabled for rewrites."""
+        return self._config.get("thinking_mode", DEFAULT_CONFIG["thinking_mode"])
+
+    @thinking_mode.setter
+    def thinking_mode(self, value: bool):
+        """Set whether thinking mode is enabled for rewrites."""
+        self._config["thinking_mode"] = value
+        self.save()
+
+    @property
     def hotkeys_enabled(self) -> bool:
         """Get whether hot keys are enabled."""
         return self._config.get("hotkeys_enabled", DEFAULT_CONFIG["hotkeys_enabled"])
@@ -206,6 +224,86 @@ class Config:
             if isinstance(hk, dict):
                 defaults[mode_key] = dict(hk)
         return defaults
+
+    # Speech-to-Text Settings
+
+    @property
+    def speech_enabled(self) -> bool:
+        """Get whether speech-to-text is enabled."""
+        speech = self._config.get("speech", {})
+        return speech.get("enabled", DEFAULT_CONFIG["speech"]["enabled"])
+
+    @speech_enabled.setter
+    def speech_enabled(self, value: bool):
+        """Set whether speech-to-text is enabled."""
+        if "speech" not in self._config:
+            self._ensure_speech_config()
+        self._config["speech"]["enabled"] = value
+        self.save()
+
+    @property
+    def speech_model(self) -> str:
+        """Get the speech-to-text model name."""
+        speech = self._config.get("speech", {})
+        return speech.get("model", DEFAULT_CONFIG["speech"]["model"])
+
+    @speech_model.setter
+    def speech_model(self, value: str):
+        """Set the speech-to-text model name."""
+        if "speech" not in self._config:
+            self._ensure_speech_config()
+        self._config["speech"]["model"] = value
+        self.save()
+
+    @property
+    def speech_language(self) -> str:
+        """Get the speech-to-text language code."""
+        speech = self._config.get("speech", {})
+        return speech.get("language", DEFAULT_CONFIG["speech"]["language"])
+
+    @speech_language.setter
+    def speech_language(self, value: str):
+        """Set the speech-to-text language code."""
+        if "speech" not in self._config:
+            self._ensure_speech_config()
+        self._config["speech"]["language"] = value
+        self.save()
+
+    def _ensure_speech_config(self):
+        """Ensure speech config exists with deep-copied defaults."""
+        default_speech = DEFAULT_CONFIG["speech"]
+        self._config["speech"] = {
+            "enabled": default_speech["enabled"],
+            "model": default_speech["model"],
+            "language": default_speech["language"],
+            "hotkey": dict(default_speech["hotkey"]),
+        }
+
+    def get_speech_hotkey(self) -> dict:
+        """Get the speech hotkey config.
+
+        Returns:
+            Dict with "modifiers" and "key" strings.
+        """
+        speech = self._config.get("speech", {})
+        default_hotkey = DEFAULT_CONFIG["speech"]["hotkey"]
+        hotkey = speech.get("hotkey", default_hotkey)
+        return dict(hotkey)
+
+    def set_speech_hotkey(self, modifiers: str, key: str):
+        """Set the speech hotkey.
+
+        Args:
+            modifiers: Modifier string (e.g. "fn").
+            key: Key character (e.g. "f13").
+        """
+        if "speech" not in self._config:
+            self._ensure_speech_config()
+        self._config["speech"]["hotkey"] = {
+            "modifiers": modifiers,
+            "key": key.lower() if key else "",
+        }
+        self.save()
 
     # API Key Management via config file
 

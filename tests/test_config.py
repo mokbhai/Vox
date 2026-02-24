@@ -38,6 +38,7 @@ class TestConfigConstants:
         assert DEFAULT_CONFIG["base_url"] is None
         assert DEFAULT_CONFIG["auto_start"] is False
         assert DEFAULT_CONFIG["toast_position"] == "cursor"
+        assert DEFAULT_CONFIG["thinking_mode"] is False
         assert DEFAULT_CONFIG["hotkeys_enabled"] is True
 
     def test_default_hotkeys_structure(self):
@@ -137,6 +138,69 @@ class TestConfig:
         assert data["model"] == "gpt-4o"
         assert data["auto_start"] is True
         assert data["base_url"] == "https://custom.api"
+
+
+class TestConfigThinkingMode:
+    """Tests for thinking mode configuration."""
+
+    @pytest.fixture
+    def temp_config(self):
+        """Create a config instance for thinking mode tests."""
+        with tempfile.TemporaryDirectory() as tmpdir:
+            with patch("vox.config.Path.home", return_value=Path(tmpdir)):
+                reset_config()
+                config = Config()
+                yield config
+
+    def test_thinking_mode_default(self, temp_config):
+        """Test default thinking_mode value is False."""
+        assert temp_config.thinking_mode is False
+
+    def test_thinking_mode_getter_setter(self, temp_config):
+        """Test thinking_mode getter and setter."""
+        temp_config.thinking_mode = True
+        assert temp_config.thinking_mode is True
+
+        temp_config.thinking_mode = False
+        assert temp_config.thinking_mode is False
+
+    def test_thinking_mode_persistence(self, temp_config):
+        """Test thinking_mode is persisted to file."""
+        temp_config.thinking_mode = True
+
+        # Verify file was created and contains correct data
+        assert temp_config.config_file.exists()
+        with open(temp_config.config_file, "r") as f:
+            data = yaml.safe_load(f)
+
+        assert data["thinking_mode"] is True
+
+    def test_thinking_mode_load_from_file(self, temp_config):
+        """Test thinking_mode is loaded from existing config file."""
+        # Write config with thinking_mode enabled
+        config_data = {
+            "model": "gpt-4o-mini",
+            "thinking_mode": True,
+        }
+        with open(temp_config.config_file, "w") as f:
+            yaml.dump(config_data, f)
+
+        # Reload config
+        temp_config.load()
+
+        assert temp_config.thinking_mode is True
+
+    def test_thinking_mode_default_when_missing_in_file(self, temp_config):
+        """Test thinking_mode defaults to False when not in config file."""
+        # Write config without thinking_mode
+        config_data = {"model": "gpt-4o-mini"}
+        with open(temp_config.config_file, "w") as f:
+            yaml.dump(config_data, f)
+
+        # Reload config
+        temp_config.load()
+
+        assert temp_config.thinking_mode is False
 
 
 class TestConfigApiKey:

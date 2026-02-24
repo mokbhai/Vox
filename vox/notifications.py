@@ -195,7 +195,8 @@ class LoadingBar(AppKit.NSWindow):
     BAR_WIDTH = 260
     BAR_HEIGHT = 5
     CORNER_RADIUS = 2.5
-    TOP_OFFSET = 0  # flush with top edge of screen
+    MENU_BAR_OFFSET = 25  # minimum offset for menu bar
+    NOTCH_EXTRA = 10  # extra padding below notch
 
     @classmethod
     def create(cls):
@@ -256,14 +257,25 @@ class LoadingBar(AppKit.NSWindow):
     # -- positioning ---------------------------------------------------------
 
     def _position_top_center(self):
-        """Place the bar at the top center of the main screen."""
+        """Place the bar at the top center of the main screen, below the notch/menu bar."""
         screen = AppKit.NSScreen.mainScreen()
         if screen is None:
             return
         screen_frame = screen.frame()
+
+        # Start with menu bar offset
+        offset = self.MENU_BAR_OFFSET
+
+        # Add notch offset if present (macOS 12+)
+        if hasattr(screen, 'safeAreaInsets'):
+            insets = screen.safeAreaInsets()
+            if insets.top > 0:
+                # On notched displays, safeAreaInsets.top includes notch height
+                offset = insets.top + self.NOTCH_EXTRA
+
         x = screen_frame.origin.x + (screen_frame.size.width - self.BAR_WIDTH) / 2
         y = (screen_frame.origin.y + screen_frame.size.height
-             - self.BAR_HEIGHT - self.TOP_OFFSET)
+             - self.BAR_HEIGHT - offset)
         self.setFrameOrigin_(Foundation.NSMakePoint(x, y))
 
     # -- animation -----------------------------------------------------------
@@ -340,4 +352,199 @@ class LoadingBarManager:
 
     def is_visible(self) -> bool:
         """Check if the loading bar is currently visible."""
+        return self._is_visible
+
+
+class RecordingToast(AppKit.NSWindow):
+    """A toast window showing recording status with audio level indicator."""
+
+    _instance = None
+    _level_view = objc.ivar()
+    _text_field = objc.ivar()
+    _fill_view = objc.ivar()
+
+    TOAST_WIDTH = 180
+    TOAST_HEIGHT = 44
+    LEVEL_WIDTH = 100
+    LEVEL_HEIGHT = 6
+    CORNER_RADIUS = 8
+
+    @classmethod
+    def create(cls):
+        """Create and initialize the recording toast window."""
+        frame = Foundation.NSMakeRect(0, 0, cls.TOAST_WIDTH, cls.TOAST_HEIGHT)
+        window = cls.alloc().initWithContentRect_styleMask_backing_defer_(
+            frame,
+            AppKit.NSWindowStyleMaskBorderless,
+            AppKit.NSBackingStoreBuffered,
+            False,
+        )
+        if window is None:
+            return None
+
+        window.setTitle_("VoxRecording")
+        window.setOpaque_(False)
+        window.setBackgroundColor_(AppKit.NSColor.clearColor())
+        window.setLevel_(AppKit.NSFloatingWindowLevel)
+        window.setIgnoresMouseEvents_(True)
+        window.setCollectionBehavior_(
+            AppKit.NSWindowCollectionBehaviorCanJoinAllSpaces
+            | AppKit.NSWindowCollectionBehaviorStationary
+        )
+
+        # Create container view with rounded corners
+        container = AppKit.NSView.alloc().initWithFrame_(frame)
+        container.setWantsLayer_(True)
+        layer = container.layer()
+        layer.setCornerRadius_(cls.CORNER_RADIUS)
+        layer.setBackgroundColor_(
+            AppKit.NSColor.colorWithDeviceWhite_alpha_(0.15, 0.92).CGColor()
+        )
+        window.setContentView_(container)
+
+        # Create text field
+        text_frame = Foundation.NSMakeRect(
+            (cls.TOAST_WIDTH - cls.LEVEL_WIDTH) / 2 - 10,
+            24,
+            cls.LEVEL_WIDTH + 20,
+            18
+        )
+        window._text_field = AppKit.NSTextField.alloc().initWithFrame_(text_frame)
+        window._text_field.setStringValue_("Recording...")
+        window._text_field.setBezeled_(False)
+        window._text_field.setDrawsBackground_(False)
+        window._text_field.setEditable_(False)
+        window._text_field.setSelectable_(False)
+        window._text_field.setTextColor_(AppKit.NSColor.whiteColor())
+        window._text_field.setAlignment_(AppKit.NSTextAlignmentCenter)
+        window._text_field.setFont_(AppKit.NSFont.systemFontOfSize_(12, weight=0.5))
+        container.addSubview_(window._text_field)
+
+        # Create audio level bar (VU meter)
+        level_x = (cls.TOAST_WIDTH - cls.LEVEL_WIDTH) / 2
+        level_frame = Foundation.NSMakeRect(
+            level_x, 10, cls.LEVEL_WIDTH, cls.LEVEL_HEIGHT
+        )
+        window._level_view = AppKit.NSView.alloc().initWithFrame_(level_frame)
+        window._level_view.setWantsLayer_(True)
+        level_layer = window._level_view.layer()
+        level_layer.setCornerRadius_(cls.LEVEL_HEIGHT / 2)
+        level_layer.setBackgroundColor_(
+            AppKit.NSColor.colorWithWhite_alpha_(0.3, 1.0).CGColor()
+        )
+        container.addSubview_(window._level_view)
+
+        # Create level fill bar
+        fill_frame = Foundation.NSMakeRect(0, 0, 0, cls.LEVEL_HEIGHT)
+        window._fill_view = AppKit.NSView.alloc().initWithFrame_(fill_frame)
+        window._fill_view.setWantsLayer_(True)
+        fill_layer = window._fill_view.layer()
+        fill_layer.setCornerRadius_(cls.LEVEL_HEIGHT / 2)
+        fill_layer.setBackgroundColor_(
+            AppKit.NSColor.systemRedColor().CGColor()
+        )
+        window._level_view.addSubview_(window._fill_view)
+
+        return window
+
+    def _position_at_cursor(self):
+        """Position the toast near the mouse cursor."""
+        mouse_location = AppKit.NSEvent.mouseLocation()
+        x = mouse_location.x + 15
+        y = mouse_location.y - self.TOAST_HEIGHT - 15
+        self.setFrameTopLeftPoint_(Foundation.NSMakePoint(x, y))
+
+    def show_recording(self):
+        """Show the recording toast with 'Recording...' text."""
+        self._text_field.setStringValue_("Recording...")
+        self._position_at_cursor()
+        self.orderFrontRegardless()
+        self._reset_level()
+
+    def update_level(self, level: float):
+        """Update the audio level indicator (0.0-1.0)."""
+        if self._fill_view is None:
+            return
+
+        # Clamp level to 0-1
+        level = max(0.0, min(1.0, level))
+
+        # Update fill bar width
+        fill_width = self.LEVEL_WIDTH * level
+        fill_frame = Foundation.NSMakeRect(0, 0, fill_width, self.LEVEL_HEIGHT)
+        self._fill_view.setFrame_(fill_frame)
+
+        # Update color based on level (green -> yellow -> red)
+        if level < 0.5:
+            # Green to yellow
+            r = level * 2
+            g = 1.0
+            b = 0.0
+        else:
+            # Yellow to red
+            r = 1.0
+            g = 1.0 - (level - 0.5) * 2
+            b = 0.0
+
+        color = AppKit.NSColor.colorWithCalibratedRed_green_blue_alpha_(r, g, b, 1.0)
+        self._fill_view.layer().setBackgroundColor_(color.CGColor())
+
+    def _reset_level(self):
+        """Reset the level indicator to zero."""
+        if self._fill_view:
+            fill_frame = Foundation.NSMakeRect(0, 0, 0, self.LEVEL_HEIGHT)
+            self._fill_view.setFrame_(fill_frame)
+
+    def show_transcribing(self):
+        """Update the toast to show 'Transcribing...' text."""
+        self._text_field.setStringValue_("Transcribing...")
+        self._reset_level()
+
+    def hide(self):
+        """Hide the toast window."""
+        self.orderOut_(None)
+
+    @classmethod
+    def get_instance(cls):
+        """Get the singleton recording toast instance."""
+        if cls._instance is None:
+            cls._instance = cls.create()
+        return cls._instance
+
+
+class RecordingToastManager:
+    """Manages the recording toast for speech-to-text."""
+
+    def __init__(self):
+        self._is_visible = False
+
+    def show_recording(self):
+        """Show the recording toast."""
+        toast = RecordingToast.get_instance()
+        if toast:
+            toast.show_recording()
+            self._is_visible = True
+
+    def update_level(self, level: float):
+        """Update the audio level indicator."""
+        toast = RecordingToast.get_instance()
+        if toast:
+            toast.update_level(level)
+
+    def show_transcribing(self):
+        """Update to show transcribing state."""
+        toast = RecordingToast.get_instance()
+        if toast:
+            toast.show_transcribing()
+
+    def hide(self):
+        """Hide the recording toast."""
+        if self._is_visible:
+            toast = RecordingToast.get_instance()
+            if toast:
+                toast.hide()
+            self._is_visible = False
+
+    def is_visible(self) -> bool:
+        """Check if the toast is currently visible."""
         return self._is_visible

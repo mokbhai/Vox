@@ -27,7 +27,7 @@ from Quartz.CoreGraphics import (
 from vox.config import get_config
 from vox.api import RewriteMode, RewriteAPI, APIKeyError, NetworkError, RateLimitError, RewriteError, DISPLAY_NAMES
 from vox.service import ServiceProvider
-from vox.notifications import LoadingBarManager, ErrorNotifier
+from vox.notifications import LoadingBarManager, ErrorNotifier, RecordingToastManager
 from vox.hotkey import (
     create_hotkey_manager,
     KEY_CODE_TO_CHAR,
@@ -35,6 +35,15 @@ from vox.hotkey import (
     format_hotkey_display,
     modifier_mask_to_string,
     parse_modifiers,
+)
+from vox.preferences import show_preferences_window
+from vox.speech import (
+    AudioRecorder,
+    SpeechTranscriber,
+    WhisperModelManager,
+    SpeechError,
+    MicrophonePermissionError,
+    ModelNotDownloadedError,
 )
 
 
@@ -64,424 +73,6 @@ def get_menu_bar_icon() -> Optional[AppKit.NSImage]:
     return None
 
 
-class EditableTextField(AppKit.NSTextField):
-    """NSTextField subclass that supports Cmd+C/V/X/A in NSAlert modal sessions.
-
-    NSAlert's modal run loop intercepts key equivalents before they reach the
-    field editor.  This subclass catches Cmd+C/V/X/A in performKeyEquivalent_
-    and forwards them via NSApp.sendAction_to_from_() so clipboard operations
-    work normally.
-    """
-
-    def performKeyEquivalent_(self, event):
-        flags = event.modifierFlags()
-        if flags & AppKit.NSEventModifierFlagCommand:
-            chars = event.charactersIgnoringModifiers()
-            action_map = {
-                "c": "copy:",
-                "v": "paste:",
-                "x": "cut:",
-                "a": "selectAll:",
-            }
-            action_sel = action_map.get(chars)
-            if action_sel:
-                return AppKit.NSApp.sendAction_to_from_(action_sel, None, self)
-        return objc.super(EditableTextField, self).performKeyEquivalent_(event)
-
-
-class HotkeyRecorderField(AppKit.NSTextField):
-    """NSTextField subclass that records a keyboard shortcut.
-
-    When focused it shows "Press shortcut..." and waits for a modifier+key
-    combination.  While the user holds modifier keys it previews them as
-    symbols (e.g. "⌘⌥...").  Once a valid key is pressed it stores the
-    result and displays it (e.g. "⌘⌥V").
-
-    Press Backspace, Delete, or Escape to clear the shortcut.
-
-    After recording, `modifiers_mask` and `key_char` hold the raw values and
-    `get_modifiers_string()` / `get_key_string()` return config-compatible
-    strings.
-    """
-
-    def initWithFrame_(self, frame):
-        self = objc.super(HotkeyRecorderField, self).initWithFrame_(frame)
-        if self is None:
-            return None
-        self._modifiers_mask = 0
-        self._key_char = ""
-        self._recording = False
-        self._original_value = ""
-        return self
-
-    # -- public API ----------------------------------------------------------
-
-    def set_hotkey(self, modifiers_str, key_str):
-        """Initialise from config strings (e.g. "cmd+option", "v")."""
-        if not key_str:
-            self._modifiers_mask = 0
-            self._key_char = ""
-            self.setStringValue_("None")
-            return
-        self._modifiers_mask = parse_modifiers(modifiers_str)
-        self._key_char = key_str.lower()
-        self.setStringValue_(format_hotkey_display(self._modifiers_mask, self._key_char))
-
-    def get_modifiers_string(self):
-        return modifier_mask_to_string(self._modifiers_mask)
-
-    def get_key_string(self):
-        return self._key_char.lower() if self._key_char else ""
-
-    def is_assigned(self):
-        """Return True if a shortcut key is assigned."""
-        return bool(self._key_char)
-
-    # -- focus / recording ---------------------------------------------------
-
-    def becomeFirstResponder(self):
-        result = objc.super(HotkeyRecorderField, self).becomeFirstResponder()
-        if result:
-            self._recording = True
-            self._original_value = self.stringValue()
-            self.setStringValue_("Press shortcut...")
-        return result
-
-    def resignFirstResponder(self):
-        if self._recording:
-            self._recording = False
-            # Show current state
-            if self._key_char:
-                self.setStringValue_(format_hotkey_display(self._modifiers_mask, self._key_char))
-            else:
-                self.setStringValue_("None")
-        return objc.super(HotkeyRecorderField, self).resignFirstResponder()
-
-    # -- event handling ------------------------------------------------------
-
-    def performKeyEquivalent_(self, event):
-        if not self._recording:
-            return objc.super(HotkeyRecorderField, self).performKeyEquivalent_(event)
-        # Intercept everything while recording
-        self._process_key_event(event)
-        return True
-
-    def keyDown_(self, event):
-        if not self._recording:
-            objc.super(HotkeyRecorderField, self).keyDown_(event)
-            return
-        self._process_key_event(event)
-
-    def flagsChanged_(self, event):
-        if not self._recording:
-            objc.super(HotkeyRecorderField, self).flagsChanged_(event)
-            return
-        flags = event.modifierFlags()
-        mask = 0
-        for flag, _ in MODIFIER_SYMBOLS:
-            if flags & flag:
-                mask |= flag
-        if mask:
-            symbols = "".join(sym for f, sym in MODIFIER_SYMBOLS if mask & f)
-            self.setStringValue_(symbols + "...")
-        else:
-            self.setStringValue_("Press shortcut...")
-
-    # -- internal ------------------------------------------------------------
-
-    def _process_key_event(self, event):
-        keycode = event.keyCode()
-
-        # Handle clear keys: Backspace (0x33), Delete (0x75), Escape (0x35)
-        if keycode in (0x33, 0x75, 0x35):
-            self._modifiers_mask = 0
-            self._key_char = ""
-            self._recording = False
-            self.setStringValue_("None")
-            if self.window():
-                self.window().makeFirstResponder_(None)
-            return
-
-        char = KEY_CODE_TO_CHAR.get(keycode)
-        if char is None:
-            return  # ignore non-mapped keys (e.g. pure modifier press)
-
-        flags = event.modifierFlags()
-        mask = 0
-        for flag, _ in MODIFIER_SYMBOLS:
-            if flags & flag:
-                mask |= flag
-
-        if not mask:
-            return  # require at least one modifier
-
-        self._modifiers_mask = mask
-        self._key_char = char
-        self._recording = False
-        self.setStringValue_(format_hotkey_display(mask, char))
-
-        # Move focus away to signal completion
-        if self.window():
-            self.window().makeFirstResponder_(None)
-
-
-def show_settings_dialog(callback, config):
-    """Show settings dialog using NSAlert with custom view."""
-    alert = AppKit.NSAlert.alloc().init()
-    alert.setMessageText_("Vox Settings")
-    alert.setInformativeText_("Configure your OpenAI settings below.")
-    alert.setAlertStyle_(AppKit.NSAlertStyleInformational)
-
-    # Get current values
-    current_key = config.get_api_key() or ""
-    current_model = config.model or "gpt-4o-mini"
-    current_url = config.base_url or ""
-    current_auto_start = config.auto_start
-    current_hotkeys_enabled = config.hotkeys_enabled
-
-    # Create container for all fields
-    container = AppKit.NSView.alloc().initWithFrame_(
-        Foundation.NSMakeRect(0, 0, 380, 430)
-    )
-
-    y_offset = 410
-
-    # API Key
-    api_label = AppKit.NSTextField.alloc().initWithFrame_(
-        Foundation.NSMakeRect(0, y_offset, 100, 20)
-    )
-    api_label.setStringValue_("API Key:")
-    api_label.setBezeled_(False)
-    api_label.setDrawsBackground_(False)
-    api_label.setEditable_(False)
-    api_label.setSelectable_(False)
-    api_label.setAlignment_(AppKit.NSTextAlignmentRight)
-    container.addSubview_(api_label)
-
-    api_field = EditableTextField.alloc().initWithFrame_(
-        Foundation.NSMakeRect(110, y_offset, 260, 24)
-    )
-    api_field.setStringValue_(current_key)
-    api_field.setPlaceholderString_("sk-...")
-    api_field.setEditable_(True)
-    api_field.setSelectable_(True)
-    container.addSubview_(api_field)
-
-    y_offset -= 35
-
-    # Model
-    model_label = AppKit.NSTextField.alloc().initWithFrame_(
-        Foundation.NSMakeRect(0, y_offset, 100, 20)
-    )
-    model_label.setStringValue_("Model:")
-    model_label.setBezeled_(False)
-    model_label.setDrawsBackground_(False)
-    model_label.setEditable_(False)
-    model_label.setSelectable_(False)
-    model_label.setAlignment_(AppKit.NSTextAlignmentRight)
-    container.addSubview_(model_label)
-
-    model_field = EditableTextField.alloc().initWithFrame_(
-        Foundation.NSMakeRect(110, y_offset, 260, 24)
-    )
-    model_field.setStringValue_(current_model)
-    model_field.setPlaceholderString_("gpt-4o-mini")
-    model_field.setEditable_(True)
-    model_field.setSelectable_(True)
-    container.addSubview_(model_field)
-
-    y_offset -= 35
-
-    # Base URL
-    url_label = AppKit.NSTextField.alloc().initWithFrame_(
-        Foundation.NSMakeRect(0, y_offset, 100, 20)
-    )
-    url_label.setStringValue_("Base URL:")
-    url_label.setBezeled_(False)
-    url_label.setDrawsBackground_(False)
-    url_label.setEditable_(False)
-    url_label.setSelectable_(False)
-    url_label.setAlignment_(AppKit.NSTextAlignmentRight)
-    container.addSubview_(url_label)
-
-    url_field = EditableTextField.alloc().initWithFrame_(
-        Foundation.NSMakeRect(110, y_offset, 260, 24)
-    )
-    url_field.setStringValue_(current_url)
-    url_field.setPlaceholderString_("https://api.openai.com/v1")
-    url_field.setEditable_(True)
-    url_field.setSelectable_(True)
-    container.addSubview_(url_field)
-
-    y_offset -= 35
-
-    # Launch at login checkbox
-    auto_label = AppKit.NSTextField.alloc().initWithFrame_(
-        Foundation.NSMakeRect(0, y_offset, 100, 20)
-    )
-    auto_label.setStringValue_("Startup:")
-    auto_label.setBezeled_(False)
-    auto_label.setDrawsBackground_(False)
-    auto_label.setEditable_(False)
-    auto_label.setSelectable_(False)
-    auto_label.setAlignment_(AppKit.NSTextAlignmentRight)
-    container.addSubview_(auto_label)
-
-    auto_checkbox = AppKit.NSButton.alloc().initWithFrame_(
-        Foundation.NSMakeRect(110, y_offset - 2, 150, 25)
-    )
-    auto_checkbox.setButtonType_(AppKit.NSSwitchButton)
-    auto_checkbox.setTitle_("Launch at login")
-    auto_checkbox.setState_(AppKit.NSControlStateValueOn if current_auto_start else AppKit.NSControlStateValueOff)
-    container.addSubview_(auto_checkbox)
-
-    y_offset -= 35
-
-    # Separator for hot key section
-    y_offset -= 10
-    separator = AppKit.NSBox.alloc().initWithFrame_(Foundation.NSMakeRect(10, y_offset, 360, 1))
-    separator.setBoxType_(AppKit.NSBoxSeparator)
-    container.addSubview_(separator)
-
-    y_offset -= 30
-
-    # Hot Key section label
-    hotkey_header = AppKit.NSTextField.alloc().initWithFrame_(
-        Foundation.NSMakeRect(0, y_offset, 380, 20)
-    )
-    hotkey_header.setStringValue_("Hot Keys")
-    hotkey_header.setBezeled_(False)
-    hotkey_header.setDrawsBackground_(False)
-    hotkey_header.setEditable_(False)
-    hotkey_header.setSelectable_(False)
-    hotkey_header.setFont_(AppKit.NSFont.boldSystemFontOfSize_(13))
-    container.addSubview_(hotkey_header)
-
-    y_offset -= 30
-
-    # Hot key enabled checkbox
-    hotkey_enable_label = AppKit.NSTextField.alloc().initWithFrame_(
-        Foundation.NSMakeRect(0, y_offset, 100, 20)
-    )
-    hotkey_enable_label.setStringValue_("")
-    hotkey_enable_label.setBezeled_(False)
-    hotkey_enable_label.setDrawsBackground_(False)
-    hotkey_enable_label.setEditable_(False)
-    hotkey_enable_label.setSelectable_(False)
-    hotkey_enable_label.setAlignment_(AppKit.NSTextAlignmentRight)
-    container.addSubview_(hotkey_enable_label)
-
-    hotkey_enable_checkbox = AppKit.NSButton.alloc().initWithFrame_(
-        Foundation.NSMakeRect(110, y_offset - 2, 200, 25)
-    )
-    hotkey_enable_checkbox.setButtonType_(AppKit.NSSwitchButton)
-    hotkey_enable_checkbox.setTitle_("Enable hot keys")
-    hotkey_enable_checkbox.setState_(AppKit.NSControlStateValueOn if current_hotkeys_enabled else AppKit.NSControlStateValueOff)
-    container.addSubview_(hotkey_enable_checkbox)
-
-    y_offset -= 35
-
-    # Per-mode hotkey recorders
-    hotkey_recorders = {}
-    all_hotkeys = config.get_all_hotkeys()
-
-    for mode in RewriteMode:
-        mode_label = AppKit.NSTextField.alloc().initWithFrame_(
-            Foundation.NSMakeRect(0, y_offset, 100, 20)
-        )
-        mode_label.setStringValue_(DISPLAY_NAMES[mode] + ":")
-        mode_label.setBezeled_(False)
-        mode_label.setDrawsBackground_(False)
-        mode_label.setEditable_(False)
-        mode_label.setSelectable_(False)
-        mode_label.setAlignment_(AppKit.NSTextAlignmentRight)
-        container.addSubview_(mode_label)
-
-        recorder = HotkeyRecorderField.alloc().initWithFrame_(
-            Foundation.NSMakeRect(110, y_offset, 120, 24)
-        )
-        hk = all_hotkeys.get(mode.value, {"modifiers": "", "key": ""})
-        recorder.set_hotkey(hk["modifiers"], hk["key"])
-        recorder.setEditable_(True)
-        recorder.setSelectable_(True)
-        container.addSubview_(recorder)
-
-        hotkey_recorders[mode.value] = recorder
-        y_offset -= 35
-
-    # Help text
-    shortcut_help = AppKit.NSTextField.alloc().initWithFrame_(
-        Foundation.NSMakeRect(110, y_offset + 10, 260, 20)
-    )
-    shortcut_help.setStringValue_("Click field, press shortcut. Delete to clear.")
-    shortcut_help.setBezeled_(False)
-    shortcut_help.setDrawsBackground_(False)
-    shortcut_help.setEditable_(False)
-    shortcut_help.setSelectable_(False)
-    shortcut_help.setTextColor_(AppKit.NSColor.secondaryLabelColor())
-    shortcut_help.setFont_(AppKit.NSFont.systemFontOfSize_(11))
-    container.addSubview_(shortcut_help)
-
-    alert.setAccessoryView_(container)
-
-    alert.addButtonWithTitle_("Save")
-    alert.addButtonWithTitle_("Cancel")
-
-    # Activate app first
-    AppKit.NSApp.activateIgnoringOtherApps_(True)
-
-    response = alert.runModal()
-
-    if response == AppKit.NSAlertFirstButtonReturn:
-        api_key = api_field.stringValue().strip()
-        model = model_field.stringValue().strip() or "gpt-4o-mini"
-        base_url = url_field.stringValue().strip() or None
-        auto_start = auto_checkbox.state() == AppKit.NSControlStateValueOn
-        hotkeys_enabled = hotkey_enable_checkbox.state() == AppKit.NSControlStateValueOn
-
-        # Collect per-mode hotkey configs
-        hotkey_configs = {}
-        for mode_value, recorder in hotkey_recorders.items():
-            hotkey_configs[mode_value] = {
-                "modifiers": recorder.get_modifiers_string(),
-                "key": recorder.get_key_string(),
-            }
-
-        if callback:
-            callback(api_key, model, base_url, auto_start, hotkeys_enabled, hotkey_configs)
-
-
-def show_about_dialog(config):
-    """Show about dialog with all assigned shortcuts."""
-    all_hotkeys = config.get_all_hotkeys()
-
-    # Build shortcut lines
-    shortcut_lines = []
-    for mode in RewriteMode:
-        hk = all_hotkeys.get(mode.value, {"modifiers": "", "key": ""})
-        if hk["key"]:
-            mod_mask = parse_modifiers(hk["modifiers"])
-            display = format_hotkey_display(mod_mask, hk["key"])
-            shortcut_lines.append(f"  {display}  {DISPLAY_NAMES[mode]}")
-
-    shortcuts_text = ""
-    if shortcut_lines:
-        shortcuts_text = "\n\nShortcuts:\n" + "\n".join(shortcut_lines)
-
-    alert = AppKit.NSAlert.alloc().init()
-    alert.setMessageText_("Vox")
-    alert.setInformativeText_(
-        "AI-powered text rewriting through macOS contextual menu.\n\n"
-        "Version 0.1.0\n\n"
-        f"Right-click any text to rewrite with AI."
-        f"{shortcuts_text}"
-    )
-    alert.setAlertStyle_(AppKit.NSAlertStyleInformational)
-    alert.addButtonWithTitle_("OK")
-    AppKit.NSApp.activateIgnoringOtherApps_(True)
-    alert.runModal()
-
-
 def get_selected_text() -> Optional[str]:
     """
     Get the currently selected text by simulating Cmd+C.
@@ -495,25 +86,16 @@ def get_selected_text() -> Optional[str]:
         saved_content = pasteboard.stringForType_(AppKit.NSPasteboardTypeString)
 
         # Simulate Cmd+C to copy selected text
-        # We use CGEvent to simulate keypresses
         source = CGEventSourceCreate(kCGEventSourceStateCombinedSessionState)
 
         # Press Cmd
-        cmd_down = CGEventCreateKeyboardEvent(
-            source, 0x37, True  # 0x37 is Cmd key
-        )
+        cmd_down = CGEventCreateKeyboardEvent(source, 0x37, True)
         # Press C
-        c_down = CGEventCreateKeyboardEvent(
-            source, 0x08, True  # 0x08 is C key
-        )
+        c_down = CGEventCreateKeyboardEvent(source, 0x08, True)
         # Release C
-        c_up = CGEventCreateKeyboardEvent(
-            source, 0x08, False
-        )
+        c_up = CGEventCreateKeyboardEvent(source, 0x08, False)
         # Release Cmd
-        cmd_up = CGEventCreateKeyboardEvent(
-            source, 0x37, False
-        )
+        cmd_up = CGEventCreateKeyboardEvent(source, 0x37, False)
 
         # Set flags to include Cmd
         cmd_flags = kCGEventFlagMaskCommand
@@ -529,7 +111,7 @@ def get_selected_text() -> Optional[str]:
         time.sleep(0.01)
         CGEventPost(kCGSessionEventTap, cmd_up)
 
-        # Wait a bit for the copy to complete
+        # Wait for the copy to complete
         time.sleep(0.05)
 
         # Get the copied text
@@ -566,21 +148,13 @@ def paste_text(text: str):
         source = CGEventSourceCreate(kCGEventSourceStateCombinedSessionState)
 
         # Press Cmd
-        cmd_down = CGEventCreateKeyboardEvent(
-            source, 0x37, True
-        )
+        cmd_down = CGEventCreateKeyboardEvent(source, 0x37, True)
         # Press V
-        v_down = CGEventCreateKeyboardEvent(
-            source, 0x09, True  # 0x09 is V key
-        )
+        v_down = CGEventCreateKeyboardEvent(source, 0x09, True)
         # Release V
-        v_up = CGEventCreateKeyboardEvent(
-            source, 0x09, False
-        )
+        v_up = CGEventCreateKeyboardEvent(source, 0x09, False)
         # Release Cmd
-        cmd_up = CGEventCreateKeyboardEvent(
-            source, 0x37, False
-        )
+        cmd_up = CGEventCreateKeyboardEvent(source, 0x37, False)
 
         # Set flags to include Cmd
         cmd_flags = kCGEventFlagMaskCommand
@@ -613,19 +187,16 @@ class MenuBarActions(AppKit.NSObject):
 
     def showSettings_(self, sender):
         """Show settings."""
-        print("DEBUG: showSettings called")
         if self.app:
             self.app._show_settings()
 
     def showAbout_(self, sender):
         """Show about."""
-        print("DEBUG: showAbout called")
         if self.app:
             self.app._show_about()
 
     def quit_(self, sender):
         """Quit."""
-        print("DEBUG: quit called")
         if self.app:
             self.app._quit()
 
@@ -660,6 +231,16 @@ class MenuBarApp:
         self._hotkey_manager.set_enabled(self.config.hotkeys_enabled)
         self._apply_hotkey_config()
 
+        # Speech-to-text support
+        self._speech_model_manager = WhisperModelManager()
+        self._transcriber = SpeechTranscriber(self._speech_model_manager)
+        self._recording_toast = RecordingToastManager()
+        self._is_speech_recording = False
+
+        # Register speech hotkey if enabled
+        if self.config.speech_enabled:
+            self._apply_speech_hotkey_config()
+
         # Create status item
         self._create_status_item()
         self._create_menu()
@@ -672,6 +253,13 @@ class MenuBarApp:
             hk = all_hotkeys.get(mode.value, {"modifiers": "", "key": ""})
             configs.append((hk["modifiers"], hk["key"], mode))
         self._hotkey_manager.set_hotkeys(configs)
+
+    def _apply_speech_hotkey_config(self):
+        """Read speech hotkey from config and apply to the hotkey manager."""
+        hk = self.config.get_speech_hotkey()
+        self._hotkey_manager.set_speech_hotkey(
+            hk["modifiers"], hk["key"], self._handle_speech_hotkey
+        )
 
     def _create_status_item(self):
         """Create the status item in the menu bar."""
@@ -696,7 +284,7 @@ class MenuBarApp:
 
         # Settings
         settings_item = AppKit.NSMenuItem.alloc().initWithTitle_action_keyEquivalent_(
-            "Settings...", "showSettings:", ""
+            "Preferences...", "showSettings:", ","
         )
         settings_item.setTarget_(self.actions)
         self.menu.addItem_(settings_item)
@@ -722,18 +310,14 @@ class MenuBarApp:
         self.menu.addItem_(quit_item)
 
     def _show_settings(self):
-        """Show the settings dialog."""
-        print("DEBUG: _show_settings called")
-        try:
-            show_settings_dialog(self._save_settings, self.config)
-            print("DEBUG: dialog shown")
-        except Exception as e:
-            print(f"DEBUG: Error showing dialog: {e}")
-            import traceback
-            traceback.print_exc()
+        """Show the preferences window."""
+        show_preferences_window(self._save_settings)
 
     def _save_settings(self, api_key: str, model: str, base_url: Optional[str], auto_start: bool,
-                      hotkeys_enabled: bool, hotkey_configs: dict):
+                      hotkeys_enabled: bool, hotkey_configs: dict,
+                      speech_enabled: bool = True, speech_model: str = "base",
+                      speech_language: str = "auto", speech_hotkey: dict = None,
+                      thinking_mode: bool = False):
         """Save the settings."""
         if api_key:
             self.config.set_api_key(api_key)
@@ -746,6 +330,8 @@ class MenuBarApp:
         if auto_start != self.config.auto_start:
             self.config.set_auto_start(auto_start)
 
+        self.config.thinking_mode = thinking_mode
+
         # Update hot key settings
         self.config.hotkeys_enabled = hotkeys_enabled
         for mode_value, hk in hotkey_configs.items():
@@ -757,9 +343,24 @@ class MenuBarApp:
         if hotkeys_enabled:
             self._hotkey_manager.reregister_hotkey()
 
+        # Update speech settings
+        self.config.speech_enabled = speech_enabled
+        self.config.speech_model = speech_model
+        self.config.speech_language = speech_language
+        if speech_hotkey:
+            self.config.set_speech_hotkey(
+                speech_hotkey["modifiers"], speech_hotkey["key"]
+            )
+
+        # Re-register speech hotkey
+        if speech_enabled:
+            self._apply_speech_hotkey_config()
+            if self._hotkey_manager.is_registered():
+                self._hotkey_manager.reregister_hotkey()
+
     def _show_about(self):
-        """Show the about dialog."""
-        show_about_dialog(self.config)
+        """Show the about dialog (opens preferences on About tab)."""
+        show_preferences_window(self._save_settings)
 
     def _quit(self):
         """Quit the application."""
@@ -809,13 +410,14 @@ class MenuBarApp:
             return
 
         api_client = RewriteAPI(api_key, self.config.model, self.config.base_url)
+        thinking_mode = self.config.thinking_mode
 
         # Show loading bar at top of screen (main thread)
         self._loading_bar.show()
 
         def _do_rewrite():
             try:
-                result = api_client.rewrite(text, mode)
+                result = api_client.rewrite(text, mode, thinking_mode)
                 print(f"Rewritten text: {result!r}")
 
                 # Dispatch paste + hide back to the main thread
@@ -851,6 +453,142 @@ class MenuBarApp:
         """Called on the main thread after a failed rewrite."""
         ErrorNotifier.show_generic_error(message)
         self._loading_bar.hide()
+
+    # Speech-to-Text handlers
+
+    def _handle_speech_hotkey(self, is_keydown: bool):
+        """Handle speech hotkey press/release."""
+        try:
+            if not self.config.speech_enabled:
+                return
+
+            if is_keydown:
+                self._start_speech_recording()
+            else:
+                self._stop_and_transcribe()
+        except Exception as e:
+            print(f"Error in _handle_speech_hotkey: {e}", flush=True)
+            import traceback
+            traceback.print_exc()
+            # Reset recording state on error
+            self._is_speech_recording = False
+            try:
+                self._recording_toast.hide()
+            except Exception:
+                pass
+
+    def _start_speech_recording(self):
+        """Start recording audio for speech-to-text."""
+        if self._is_speech_recording:
+            return
+
+        # Check microphone permission
+        if not AudioRecorder.has_microphone_permission():
+            self._show_microphone_permission_dialog()
+            return
+
+        # Check if model is downloaded
+        model_name = self.config.speech_model
+        if not self._speech_model_manager.is_model_downloaded(model_name):
+            ErrorNotifier.show_error(
+                "Vox - Model Not Downloaded",
+                f"Please download the '{model_name}' model in Settings → Speech"
+            )
+            return
+
+        try:
+            # Start recording with level callback
+            self._transcriber.start_recording(self._recording_toast.update_level)
+            self._is_speech_recording = True
+            self._recording_toast.show_recording()
+            print("Speech recording started", flush=True)
+
+        except MicrophonePermissionError as e:
+            self._show_microphone_permission_dialog()
+        except SpeechError as e:
+            ErrorNotifier.show_generic_error(str(e))
+
+    def _stop_and_transcribe(self):
+        """Stop recording and transcribe the audio."""
+        if not self._is_speech_recording:
+            return
+
+        self._is_speech_recording = False
+        self._recording_toast.show_transcribing()
+
+        model_name = self.config.speech_model
+        language = self.config.speech_language
+
+        def _do_transcribe():
+            try:
+                text = self._transcriber.stop_and_transcribe(model_name, language)
+
+                # Dispatch result to main thread
+                AppKit.NSOperationQueue.mainQueue().addOperationWithBlock_(
+                    lambda: self._finish_speech(text)
+                )
+            except ModelNotDownloadedError:
+                AppKit.NSOperationQueue.mainQueue().addOperationWithBlock_(
+                    lambda: self._fail_speech(f"Model '{model_name}' not downloaded")
+                )
+            except SpeechError as e:
+                AppKit.NSOperationQueue.mainQueue().addOperationWithBlock_(
+                    lambda: self._fail_speech(str(e))
+                )
+            except Exception as e:
+                print(f"Transcription error: {e}")
+                import traceback
+                traceback.print_exc()
+                AppKit.NSOperationQueue.mainQueue().addOperationWithBlock_(
+                    lambda: self._fail_speech(f"Transcription failed: {e}")
+                )
+
+        threading.Thread(target=_do_transcribe, name="VoxSpeech", daemon=True).start()
+
+    def _finish_speech(self, text: Optional[str]):
+        """Called on the main thread after successful transcription."""
+        self._recording_toast.hide()
+
+        if text:
+            print(f"Transcribed: {text!r}", flush=True)
+            paste_text(text)
+        else:
+            # No speech detected
+            ErrorNotifier.show_error(
+                "Vox",
+                "No speech detected"
+            )
+
+    def _fail_speech(self, message: str):
+        """Called on the main thread after failed transcription."""
+        self._recording_toast.hide()
+        ErrorNotifier.show_generic_error(message)
+
+    def _show_microphone_permission_dialog(self):
+        """Show dialog for microphone permission."""
+        alert = AppKit.NSAlert.alloc().init()
+        alert.setMessageText_("Microphone Permission Required")
+        alert.setInformativeText_(
+            "Vox needs microphone access for speech-to-text.\n\n"
+            "1. Open System Settings\n"
+            "2. Go to Privacy & Security → Microphone\n"
+            "3. Enable Vox (or Terminal in dev mode)\n\n"
+            "Then try again."
+        )
+        alert.setAlertStyle_(AppKit.NSAlertStyleWarning)
+        alert.addButtonWithTitle_("Open System Settings")
+        alert.addButtonWithTitle_("Cancel")
+
+        AppKit.NSApp.activateIgnoringOtherApps_(True)
+
+        response = alert.runModal()
+
+        if response == AppKit.NSAlertFirstButtonReturn:
+            AppKit.NSWorkspace.sharedWorkspace().openURL_(
+                AppKit.NSURL.URLWithString_(
+                    "x-apple.systempreferences:com.apple.preference.security?Privacy_Microphone"
+                )
+            )
 
     def run(self):
         """Run the application."""
