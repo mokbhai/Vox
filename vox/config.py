@@ -340,16 +340,12 @@ class Config:
         return None
 
     def set_api_key(self, api_key: str) -> bool:
-        """Store the OpenAI API key in config."""
-        self._config["api_key"] = api_key
-        self.save()
-        return True
+        """Store the OpenAI API key in keychain."""
+        return self.set_api_key_in_keychain(api_key)
 
     def delete_api_key(self) -> bool:
-        """Delete the OpenAI API key from config."""
-        self._config.pop("api_key", None)
-        self.save()
-        return True
+        """Delete the OpenAI API key from keychain."""
+        return self.delete_api_key_from_keychain()
 
     def has_api_key(self) -> bool:
         """Check if an API key is configured."""
