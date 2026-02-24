@@ -307,11 +307,37 @@ class Config:
         }
         self.save()
 
-    # API Key Management via config file
+    # API Key Management via keychain (with migration from config file)
 
     def get_api_key(self) -> Optional[str]:
-        """Retrieve the OpenAI API key from config."""
-        return self._config.get("api_key")
+        """Retrieve the OpenAI API key from keychain.
+
+        Checks keychain first. If no key exists in keychain, falls back to
+        config file for migration and automatically migrates the key to keychain.
+
+        Returns:
+            The API key string if found, None otherwise.
+        """
+        # First check keychain
+        keychain_key = self.get_api_key_from_keychain()
+        if keychain_key:
+            return keychain_key
+
+        # Fall back to config file for migration
+        config_key = self._config.get("api_key")
+        if config_key:
+            # Migrate the key to keychain
+            try:
+                if self.set_api_key_in_keychain(config_key):
+                    # Remove from config file after successful migration
+                    self._config.pop("api_key", None)
+                    self.save()
+                    return config_key
+            except Exception:
+                # If migration fails, still return the key from config
+                pass
+
+        return None
 
     def set_api_key(self, api_key: str) -> bool:
         """Store the OpenAI API key in config."""
