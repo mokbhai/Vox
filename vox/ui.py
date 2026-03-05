@@ -471,7 +471,7 @@ class MenuBarApp:
             self._is_speech_recording = False
             # Cancel the transcriber recording state
             try:
-                self._transcriber.cancel_recording(recorder_key=0)
+                self._transcriber.cancel_recording()
             except Exception:
                 pass
             try:
@@ -520,9 +520,9 @@ class MenuBarApp:
         try:
             # Start recording with level callback (use default sample rate)
             self._transcriber.start_recording(
-                sample_rate=16000,
-                level_callback=self._recording_toast.update_level,
-                recorder_key=0,
+                
+                level_callback=self._recording_toast.update_level
+                
             )
             self._is_speech_recording = True
             print("Speech recording started", flush=True)
@@ -546,7 +546,7 @@ class MenuBarApp:
         language = self.config.speech_language
 
         # Check if still recording before transcription
-        if not self._transcriber.is_recording(recorder_key=0):
+        if not self._transcriber.is_recording():
             print("Recording was cancelled, skipping transcription", flush=True)
             self._recording_toast.hide()
             return
@@ -554,7 +554,7 @@ class MenuBarApp:
         def _do_transcribe():
             try:
                 text = self._transcriber.stop_and_transcribe(
-                    model_name, language, recorder_key=0
+                    model_name, language
                 )
 
                 # Dispatch result to main thread
