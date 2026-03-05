@@ -192,7 +192,7 @@ class LoadingBar(AppKit.NSWindow):
 
     _instance = None
 
-    BAR_WIDTH = 260
+    BAR_WIDTH = 160
     BAR_HEIGHT = 5
     CORNER_RADIUS = 2.5
     MENU_BAR_OFFSET = 25  # minimum offset for menu bar
@@ -362,6 +362,7 @@ class RecordingToast(AppKit.NSWindow):
     _level_view = objc.ivar()
     _text_field = objc.ivar()
     _fill_view = objc.ivar()
+    _pulse_layer = objc.ivar()
 
     TOAST_WIDTH = 180
     TOAST_HEIGHT = 44
@@ -385,11 +386,13 @@ class RecordingToast(AppKit.NSWindow):
         window.setTitle_("VoxRecording")
         window.setOpaque_(False)
         window.setBackgroundColor_(AppKit.NSColor.clearColor())
-        window.setLevel_(AppKit.NSFloatingWindowLevel)
+        # Use a higher window level to ensure visibility
+        window.setLevel_(AppKit.NSStatusWindowLevel + 2)
         window.setIgnoresMouseEvents_(True)
         window.setCollectionBehavior_(
             AppKit.NSWindowCollectionBehaviorCanJoinAllSpaces
             | AppKit.NSWindowCollectionBehaviorStationary
+            | AppKit.NSWindowCollectionBehaviorFullScreenAuxiliary
         )
 
         # Create container view with rounded corners
@@ -398,7 +401,7 @@ class RecordingToast(AppKit.NSWindow):
         layer = container.layer()
         layer.setCornerRadius_(cls.CORNER_RADIUS)
         layer.setBackgroundColor_(
-            AppKit.NSColor.colorWithDeviceWhite_alpha_(0.15, 0.92).CGColor()
+            AppKit.NSColor.colorWithDeviceWhite_alpha_(0.15, 0.95).CGColor()
         )
         window.setContentView_(container)
 
@@ -417,7 +420,7 @@ class RecordingToast(AppKit.NSWindow):
         window._text_field.setSelectable_(False)
         window._text_field.setTextColor_(AppKit.NSColor.whiteColor())
         window._text_field.setAlignment_(AppKit.NSTextAlignmentCenter)
-        window._text_field.setFont_(AppKit.NSFont.systemFontOfSize_(12, weight=0.5))
+        window._text_field.setFont_(AppKit.NSFont.systemFontOfSize_weight_(12, 0.5))
         container.addSubview_(window._text_field)
 
         # Create audio level bar (VU meter)
@@ -445,7 +448,44 @@ class RecordingToast(AppKit.NSWindow):
         )
         window._level_view.addSubview_(window._fill_view)
 
+        # Create pulse indicator (red dot)
+        pulse_frame = Foundation.NSMakeRect(10, (cls.TOAST_HEIGHT - 8) / 2, 8, 8)
+        window._pulse_layer = Quartz.CALayer.layer()
+        window._pulse_layer.setFrame_(pulse_frame)
+        window._pulse_layer.setCornerRadius_(4)
+        window._pulse_layer.setBackgroundColor_(
+            AppKit.NSColor.systemRedColor().CGColor()
+        )
+        container.layer().addSublayer_(window._pulse_layer)
+
         return window
+
+    def _start_pulse_animation(self):
+        """Start the pulsing animation for the recording indicator."""
+        if self._pulse_layer is None:
+            return
+
+        # Remove existing animation
+        self._pulse_layer.removeAnimationForKey_("pulse")
+
+        # Create pulse animation
+        anim = Quartz.CABasicAnimation.animationWithKeyPath_("opacity")
+        anim.setFromValue_(1.0)
+        anim.setToValue_(0.3)
+        anim.setDuration_(0.5)
+        anim.setAutoreverses_(True)
+        anim.setRepeatCount_(float('inf'))
+        anim.setTimingFunction_(
+            Quartz.CAMediaTimingFunction.functionWithName_(
+                Quartz.kCAMediaTimingFunctionEaseInEaseOut
+            )
+        )
+        self._pulse_layer.addAnimation_forKey_(anim, "pulse")
+
+    def _stop_pulse_animation(self):
+        """Stop the pulsing animation."""
+        if self._pulse_layer is not None:
+            self._pulse_layer.removeAnimationForKey_("pulse")
 
     def _position_at_cursor(self):
         """Position the toast near the mouse cursor."""
@@ -460,6 +500,8 @@ class RecordingToast(AppKit.NSWindow):
         self._position_at_cursor()
         self.orderFrontRegardless()
         self._reset_level()
+        self._start_pulse_animation()
+        print("Recording toast shown", flush=True)
 
     def update_level(self, level: float):
         """Update the audio level indicator (0.0-1.0)."""
@@ -499,10 +541,15 @@ class RecordingToast(AppKit.NSWindow):
         """Update the toast to show 'Transcribing...' text."""
         self._text_field.setStringValue_("Transcribing...")
         self._reset_level()
+        self._stop_pulse_animation()
+        if self._pulse_layer is not None:
+            self._pulse_layer.setOpacity_(0.5)
 
     def hide(self):
         """Hide the toast window."""
+        self._stop_pulse_animation()
         self.orderOut_(None)
+        print("Recording toast hidden", flush=True)
 
     @classmethod
     def get_instance(cls):

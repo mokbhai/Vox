@@ -44,6 +44,7 @@ class TestConfigConstants:
     def test_default_hotkeys_structure(self):
         """Test DEFAULT_CONFIG hotkeys has all modes."""
         hotkeys = DEFAULT_CONFIG["hotkeys"]
+        assert "improve" in hotkeys
         assert "fix_grammar" in hotkeys
         assert "professional" in hotkeys
         assert "concise" in hotkeys
@@ -55,6 +56,7 @@ class TestConfigConstants:
     def test_default_hotkeys_values(self):
         """Test DEFAULT_CONFIG hotkeys have correct defaults."""
         hotkeys = DEFAULT_CONFIG["hotkeys"]
+        assert hotkeys["improve"] == {"modifiers": "cmd+shift", "key": "i"}
         assert hotkeys["fix_grammar"] == {"modifiers": "cmd+shift", "key": "g"}
         assert hotkeys["professional"] == {"modifiers": "cmd+shift", "key": "p"}
         assert hotkeys["concise"] == {"modifiers": "cmd+shift", "key": "c"}
@@ -524,6 +526,9 @@ class TestConfigHotkey:
 
     def test_get_mode_hotkey_defaults(self, temp_config):
         """Test get_mode_hotkey returns defaults for each mode."""
+        hk = temp_config.get_mode_hotkey("improve")
+        assert hk == {"modifiers": "cmd+shift", "key": "i"}
+
         hk = temp_config.get_mode_hotkey("fix_grammar")
         assert hk == {"modifiers": "cmd+shift", "key": "g"}
 
@@ -566,10 +571,12 @@ class TestConfigHotkey:
     def test_get_all_hotkeys(self, temp_config):
         """Test get_all_hotkeys returns all modes."""
         all_hk = temp_config.get_all_hotkeys()
+        assert "improve" in all_hk
         assert "fix_grammar" in all_hk
         assert "professional" in all_hk
         assert "concise" in all_hk
         assert "friendly" in all_hk
+        assert all_hk["improve"] == {"modifiers": "cmd+shift", "key": "i"}
         assert all_hk["fix_grammar"] == {"modifiers": "cmd+shift", "key": "g"}
 
     def test_get_all_hotkeys_after_modification(self, temp_config):

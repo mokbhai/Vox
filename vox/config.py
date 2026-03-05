@@ -22,6 +22,7 @@ DEFAULT_CONFIG = {
     "thinking_mode": False,  # Enable extended thinking for rewrites
     "hotkeys_enabled": True,
     "hotkeys": {
+        "improve":      {"modifiers": "cmd+shift", "key": "i"},
         "fix_grammar":  {"modifiers": "cmd+shift", "key": "g"},
         "professional": {"modifiers": "cmd+shift", "key": "p"},
         "concise":      {"modifiers": "cmd+shift", "key": "c"},

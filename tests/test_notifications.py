@@ -1,6 +1,5 @@
 """Tests for the notifications module."""
-import pytest
-from unittest.mock import patch, MagicMock, Mock, call
+from unittest.mock import patch, MagicMock
 from vox.notifications import (
     ToastWindow,
     ToastManager,

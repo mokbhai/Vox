@@ -5,7 +5,6 @@ Provides offline speech recognition using whisper.cpp via pywhispercpp.
 Records audio from the microphone and transcribes it using local GGML models.
 """
 import io
-import threading
 import wave
 from pathlib import Path
 from typing import Callable, Optional
@@ -319,7 +318,7 @@ class AudioRecorder:
                         level = min(rms / RMS_NORMALIZATION_FACTOR, 1.0)
                         # Dispatch to main thread
                         NSOperationQueue.mainQueue().addOperationWithBlock_(
-                            lambda l=level: self._level_callback(l)
+                            lambda lvl=level: self._level_callback(lvl)
                         )
 
                 return (in_data, pyaudio.paContinue)

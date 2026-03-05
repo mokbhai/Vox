@@ -10,6 +10,7 @@ from enum import Enum
 
 class RewriteMode(Enum):
     """Available rewrite preset modes."""
+    IMPROVE = "improve"
     FIX_GRAMMAR = "fix_grammar"
     PROFESSIONAL = "professional"
     CONCISE = "concise"
@@ -18,6 +19,11 @@ class RewriteMode(Enum):
 
 # System prompts for each rewrite mode
 SYSTEM_PROMPTS = {
+    RewriteMode.IMPROVE: (
+        "You are a writing assistant. Improve the given text for clarity, flow, and "
+        "impact while preserving the original meaning and language. Return only the "
+        "improved text without any explanations or additional content."
+    ),
     RewriteMode.FIX_GRAMMAR: (
         "You are a grammar and spelling assistant. Correct any grammar, spelling, "
         "and punctuation errors in the given text while preserving the original "
@@ -46,6 +52,7 @@ SYSTEM_PROMPTS = {
 
 # Display names for UI
 DISPLAY_NAMES = {
+    RewriteMode.IMPROVE: "Improve",
     RewriteMode.FIX_GRAMMAR: "Fix Grammar",
     RewriteMode.PROFESSIONAL: "Professional",
     RewriteMode.CONCISE: "Concise",
@@ -154,6 +161,80 @@ class RewriteAPI:
 
             return content.strip()
 
+        except RewriteError:
+            raise
+        except OpenAIError as e:
+            print(f"OpenAI error: {type(e).__name__}: {e}", flush=True)
+            self._handle_openai_error(e)
+            raise RewriteError(f"API error: {e}")
+        except Exception as e:
+            print(f"Unexpected API error: {type(e).__name__}: {e}", flush=True)
+            raise RewriteError(f"API error: {e}")
+
+    def rewrite_with_instruction(
+        self, text: str, instruction: str, thinking_mode: bool = False
+    ) -> str:
+        """
+        Rewrite text using a custom instruction.
+
+        Args:
+            text: The text to rewrite.
+            instruction: User-provided rewrite instruction.
+            thinking_mode: If True, use extended thinking for more thorough rewriting.
+
+        Returns:
+            The rewritten text.
+
+        Raises:
+            RewriteError: If the rewrite fails.
+        """
+        if not text or not text.strip():
+            return text
+
+        normalized_instruction = (
+            instruction.strip()
+            if instruction and instruction.strip()
+            else "Improve this text while preserving meaning and language."
+        )
+        system_prompt = (
+            "You are a writing assistant. Rewrite the user text according to this "
+            f"instruction: {normalized_instruction} Return only the rewritten text "
+            "without any explanations, commentary, or markdown."
+        )
+        if thinking_mode:
+            system_prompt = (
+                f"{system_prompt}\n\n"
+                "Before providing your final answer, think through this step-by-step:\n"
+                "1. Analyze the original text and the requested transformation\n"
+                "2. Consider multiple rewrite options that satisfy the instruction\n"
+                "3. Choose the best option and produce the final rewrite\n"
+                "4. Return only the final rewritten text"
+            )
+
+        try:
+            print(
+                "API custom call: "
+                f"model={self.model}, base_url={self.base_url}, thinking_mode={thinking_mode}",
+                flush=True,
+            )
+            response = self.client.chat.completions.create(
+                model=self.model,
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": text},
+                ],
+                temperature=0.7,
+            )
+            print(f"API response type: {type(response)}, value: {response}", flush=True)
+
+            if response is None or not response.choices:
+                raise RewriteError("Empty response from API - check your model and base URL settings")
+
+            content = response.choices[0].message.content
+            if content is None:
+                raise RewriteError("API returned empty content")
+
+            return content.strip()
         except RewriteError:
             raise
         except OpenAIError as e:

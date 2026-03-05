@@ -13,10 +13,12 @@ Vox integrates with macOS to add AI-powered text tools to your workflow. Works i
 
 When you right-click selected text, you'll see these options under "Rewrite with Vox":
 
+- **Rewrite with Vox** - Default quick Improve pass for selected text
 - **Fix Grammar** - Correct spelling, grammar, and punctuation
 - **Professional** - Make text formal and business-appropriate
 - **Concise** - Shorten text while preserving meaning
 - **Friendly** - Make tone warm and casual
+- **Ask Vox...** - Enter a custom rewrite instruction for the selected text
 
 The rewritten text replaces your selection instantly. Press Cmd+Z in the host app to undo if needed.
 

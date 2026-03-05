@@ -1,6 +1,5 @@
 """Tests for the hotkey module."""
-import pytest
-from unittest.mock import patch, MagicMock, Mock
+from unittest.mock import patch, MagicMock
 from vox.hotkey import (
     get_key_code,
     parse_modifiers,
@@ -213,7 +212,7 @@ class TestHotKeyManager:
     def test_set_callback(self):
         """Test setting the callback function."""
         manager = HotKeyManager()
-        callback = lambda: None
+        callback = lambda: None  # noqa: E731
         manager.set_callback(callback)
         assert manager._callback == callback
 

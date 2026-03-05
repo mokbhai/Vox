@@ -1,12 +1,11 @@
 """Tests for the API module."""
 import pytest
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import patch, MagicMock
 from vox.api import (
     RewriteMode,
     DISPLAY_NAMES,
     SYSTEM_PROMPTS,
     RewriteAPI,
-    RewriteError,
     APIKeyError,
     NetworkError,
     RateLimitError,
@@ -20,6 +19,7 @@ class TestRewriteMode:
         """Test that all expected modes are defined."""
         expected_modes = {
             RewriteMode.FIX_GRAMMAR,
+            RewriteMode.IMPROVE,
             RewriteMode.PROFESSIONAL,
             RewriteMode.CONCISE,
             RewriteMode.FRIENDLY,
@@ -61,7 +61,7 @@ class TestRewriteAPI:
 
     def test_init_with_model(self):
         """Test initialization with custom model."""
-        with patch("vox.api.OpenAI") as mock_openai:
+        with patch("vox.api.OpenAI") as mock_openai:  # noqa: F841
             api = RewriteAPI("test-key", model="gpt-4o")
             assert api.model == "gpt-4o"
 
@@ -216,7 +216,8 @@ class TestRewriteAPI:
     def test_get_all_modes(self):
         """Test get_all_modes returns all modes with display names."""
         modes = RewriteAPI.get_all_modes()
-        assert len(modes) == 4
+        assert len(modes) == 5
+        assert (RewriteMode.IMPROVE, "Improve") in modes
         assert (RewriteMode.FIX_GRAMMAR, "Fix Grammar") in modes
         assert (RewriteMode.PROFESSIONAL, "Professional") in modes
         assert (RewriteMode.CONCISE, "Concise") in modes

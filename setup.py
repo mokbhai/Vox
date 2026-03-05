@@ -22,7 +22,7 @@ OPTIONS = {
             "LSUIElement": True,
             "NSServices": [
                 {
-                    "NSMessage": "fixGrammarService",
+                    "NSMessage": "improveService",
                     "NSMenuItem": {"default": "Rewrite with Vox"},
                     "NSPortName": {"default": "Vox"},
                     "NSSendTypes": ["public.utf8-plain-text"],
@@ -49,6 +49,12 @@ OPTIONS = {
                 {
                     "NSMessage": "friendlyService",
                     "NSMenuItem": {"default": "Rewrite with Vox/Friendly"},
+                    "NSPortName": {"default": "Vox"},
+                    "NSSendTypes": ["public.utf8-plain-text"],
+                },
+                {
+                    "NSMessage": "askVoxService",
+                    "NSMenuItem": {"default": "Rewrite with Vox/Ask Vox..."},
                     "NSPortName": {"default": "Vox"},
                     "NSSendTypes": ["public.utf8-plain-text"],
                 },

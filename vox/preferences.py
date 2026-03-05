@@ -479,7 +479,6 @@ class PreferencesWindowController(AppKit.NSWindowController):
         """Create the speech-to-text content view."""
         container_width = self._content_container.frame().size.width
         container_height = self._content_container.frame().size.height
-        field_width = container_width - self.LABEL_WIDTH - 60
 
         view = AppKit.NSView.alloc().initWithFrame_(
             Foundation.NSMakeRect(0, 0, container_width, container_height)
@@ -669,7 +668,7 @@ class PreferencesWindowController(AppKit.NSWindowController):
                 )
             except Exception as e:
                 AppKit.NSOperationQueue.mainQueue().addOperationWithBlock_(
-                    lambda: self._download_complete(model_name, str(e))
+                    lambda err=e: self._download_complete(model_name, str(err))
                 )
 
         threading.Thread(target=do_download, name="ModelDownload", daemon=True).start()

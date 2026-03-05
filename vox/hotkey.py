@@ -146,6 +146,8 @@ def get_key_code(key_str: str) -> int:
     key = key_str.lower()
     if len(key) == 0:
         return 0x09  # Default to V
+    if key in KEY_CODES:
+        return KEY_CODES[key]
     return KEY_CODES.get(key[0], 0x09)
 
 
@@ -182,9 +184,10 @@ class HotKeyManager:
         self._run_loop = None
         self._tap_thread = None
         # Speech hotkey state (press-and-hold)
-        self._speech_hotkey: Optional[Tuple[int, int]] = None  # (key_code, mod_mask)
+        self._speech_hotkey: Optional[Tuple[Optional[int], int]] = None  # (key_code, mod_mask), key_code=None for modifier-only
         self._speech_callback: Optional[Callable[[bool], None]] = None
         self._speech_key_pressed: bool = False
+        self._previous_flags: int = 0  # Track previous modifier state for modifier-only hotkeys
 
     def set_callback(self, callback):
         """Set the callback function. Called with (mode) argument."""
@@ -208,18 +211,32 @@ class HotKeyManager:
     def set_speech_hotkey(self, modifiers_str: str, key_str: str, callback):
         """Set the speech hotkey with press-and-hold callback.
 
+        Supports both:
+        - Key + modifiers (e.g. "cmd" + "f13")
+        - Modifiers only (e.g. "cmd" + "") for press-and-hold modifier
+
         Args:
-            modifiers_str: Modifier string (e.g. "fn").
-            key_str: Key character (e.g. "f13").
+            modifiers_str: Modifier string (e.g. "cmd", "cmd+shift").
+            key_str: Key character (e.g. "f13"), or empty for modifier-only.
             callback: Callback function called with is_keydown (bool) argument.
         """
+        mod_mask = parse_modifiers(modifiers_str)
+
+        # Support modifier-only hotkeys (e.g., just CMD)
         if not key_str:
-            self._speech_hotkey = None
-            self._speech_callback = None
+            if mod_mask == 0:
+                # No modifiers and no key - disable speech hotkey
+                self._speech_hotkey = None
+                self._speech_callback = None
+                return
+            # Modifier-only hotkey: use special marker for key_code
+            self._speech_hotkey = (None, mod_mask)  # None key_code means modifier-only
+            self._speech_callback = callback
+            self._speech_key_pressed = False
+            self._previous_flags = 0  # Track previous modifier state
             return
 
         key_code = get_key_code(key_str)
-        mod_mask = parse_modifiers(modifiers_str)
         self._speech_hotkey = (key_code, mod_mask)
         self._speech_callback = callback
         self._speech_key_pressed = False
@@ -242,8 +259,8 @@ class HotKeyManager:
         if self._is_registered:
             return True
 
-        if not self._hotkey_targets:
-            print("No hotkey targets configured, skipping registration", flush=True)
+        if not self._hotkey_targets and not self._speech_hotkey:
+            print("No hotkey targets or speech hotkey configured, skipping registration", flush=True)
             return False
 
         print(f"Accessibility permission: {has_accessibility_permission()}", flush=True)
@@ -264,6 +281,23 @@ class HotKeyManager:
                     f"(key={key_code}, mod={mod_mask})",
                     flush=True,
                 )
+
+            # Log speech hotkey registration
+            if self._speech_hotkey:
+                target_key_code, target_modifiers = self._speech_hotkey
+                mod_str = modifier_mask_to_string(target_modifiers)
+                if target_key_code is None:
+                    print(
+                        f"Registering speech hotkey: {mod_str} (modifier-only, mod={target_modifiers})",
+                        flush=True,
+                    )
+                else:
+                    key_char = KEY_CODE_TO_CHAR.get(target_key_code, "?")
+                    print(
+                        f"Registering speech hotkey: {mod_str}+{key_char} "
+                        f"(key={target_key_code}, mod={target_modifiers})",
+                        flush=True,
+                    )
 
             # Build the callback
             def tap_callback(proxy, event_type, event, user_info):
@@ -347,45 +381,78 @@ class HotKeyManager:
             if event_type == kCGEventTapDisabledByUserInput:
                 return event
 
+            # Get current flags for all speech hotkey handling
+            flags = Quartz.CGEventGetFlags(event)
+            relevant_flags = flags & ALL_MODIFIER_FLAGS_MASK
+
             # Handle speech hotkey (press-and-hold)
             if self._speech_hotkey and self._speech_callback:
-                keycode = Quartz.CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode)
-                flags = Quartz.CGEventGetFlags(event)
-                relevant_flags = flags & ALL_MODIFIER_FLAGS_MASK
-
                 target_key_code, target_modifiers = self._speech_hotkey
 
-                if keycode == target_key_code and relevant_flags == target_modifiers:
-                    if event_type == Quartz.kCGEventKeyDown:
-                        # Skip key-repeat events
-                        autorepeat = Quartz.CGEventGetIntegerValueField(
-                            event, kCGKeyboardEventAutorepeat
-                        )
-                        if autorepeat:
-                            return None
+                # Modifier-only hotkey (e.g., just CMD)
+                if target_key_code is None:
+                    # Check on FlagsChanged events for modifier-only hotkeys
+                    if event_type == Quartz.kCGEventFlagsChanged:
+                        # Check if target modifiers are now pressed (and weren't before)
+                        now_pressed = (relevant_flags & target_modifiers) == target_modifiers
+                        was_pressed = (self._previous_flags & target_modifiers) == target_modifiers
 
-                        if not self._speech_key_pressed and self._enabled:
+                        if now_pressed and not was_pressed and not self._speech_key_pressed and self._enabled:
                             self._speech_key_pressed = True
-                            print("Speech hotkey pressed", flush=True)
-                            # Capture callback by value to avoid race condition
+                            print("Speech hotkey (modifier-only) pressed", flush=True)
                             callback = self._speech_callback
                             if callback:
                                 AppKit.NSOperationQueue.mainQueue().addOperationWithBlock_(
                                     lambda cb=callback: cb(True)
                                 )
-                        return None  # Suppress the event
-
-                    elif event_type == Quartz.kCGEventKeyUp:
-                        if self._speech_key_pressed:
+                        elif not now_pressed and was_pressed and self._speech_key_pressed:
                             self._speech_key_pressed = False
-                            print("Speech hotkey released", flush=True)
-                            # Capture callback by value to avoid race condition
+                            print("Speech hotkey (modifier-only) released", flush=True)
                             callback = self._speech_callback
                             if callback:
                                 AppKit.NSOperationQueue.mainQueue().addOperationWithBlock_(
                                     lambda cb=callback: cb(False)
                                 )
-                        return None  # Suppress the event
+
+                        self._previous_flags = relevant_flags
+                        # Don't suppress modifier-only events to allow normal system behavior
+                        return event
+
+                # Key + modifier hotkey (e.g., CMD+F13)
+                else:
+                    keycode = Quartz.CGEventGetIntegerValueField(event, kCGKeyboardEventKeycode)
+
+                    if keycode == target_key_code and (relevant_flags & target_modifiers) == target_modifiers:
+                        if event_type == Quartz.kCGEventKeyDown:
+                            # Skip key-repeat events
+                            autorepeat = Quartz.CGEventGetIntegerValueField(
+                                event, kCGKeyboardEventAutorepeat
+                            )
+                            if autorepeat:
+                                return None
+
+                            if not self._speech_key_pressed and self._enabled:
+                                self._speech_key_pressed = True
+                                print("Speech hotkey pressed", flush=True)
+                                # Capture callback by value to avoid race condition
+                                callback = self._speech_callback
+                                if callback:
+                                    AppKit.NSOperationQueue.mainQueue().addOperationWithBlock_(
+                                        lambda cb=callback: cb(True)
+                                    )
+                            return None  # Suppress the event
+
+                        elif event_type == Quartz.kCGEventKeyUp:
+                            if self._speech_key_pressed:
+                                self._speech_key_pressed = False
+                                print("Speech hotkey released", flush=True)
+                                # Capture callback by value to avoid race condition
+                                callback = self._speech_callback
+                                if callback:
+                                    AppKit.NSOperationQueue.mainQueue().addOperationWithBlock_(
+                                        lambda cb=callback: cb(False)
+                                    )
+                            return None  # Suppress the event
 
             # Handle regular hotkeys (keydown only)
             if event_type != Quartz.kCGEventKeyDown:
@@ -404,7 +471,8 @@ class HotKeyManager:
 
             # Check against all registered hotkey targets
             for target_key_code, target_modifiers, mode in self._hotkey_targets:
-                if keycode == target_key_code and relevant_flags == target_modifiers:
+                # Use subset check (all required modifiers must be present, ignore extras like CapsLock)
+                if keycode == target_key_code and (relevant_flags & target_modifiers) == target_modifiers:
                     if self._enabled and self._callback:
                         key_char = KEY_CODE_TO_CHAR.get(keycode, "?")
                         print(f"Hot key triggered: {mode.value} ({key_char})", flush=True)

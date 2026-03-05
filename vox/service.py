@@ -4,10 +4,8 @@ macOS Services API integration for Vox.
 Handles text processing requests from the contextual menu
 using the NSServices mechanism via PyObjC.
 """
-import sys
 import objc
 import AppKit
-from PyObjCTools import AppHelper
 from typing import Optional
 
 from vox.config import get_config
@@ -57,6 +55,11 @@ class ServiceProvider(AppKit.NSObject):
     # Signature: (void)name:(NSPasteboard*)pboard userData:(NSString*)userData error:(NSString**)error
 
     @objc.typedSelector(b"v@:@@o^@")
+    def improveService_userData_error_(self, pasteboard, userData, error):
+        print("SERVICE CALLED: improveService", flush=True)
+        self._handle_service(pasteboard, RewriteMode.IMPROVE)
+
+    @objc.typedSelector(b"v@:@@o^@")
     def fixGrammarService_userData_error_(self, pasteboard, userData, error):
         print("SERVICE CALLED: fixGrammarService", flush=True)
         self._handle_service(pasteboard, RewriteMode.FIX_GRAMMAR)
@@ -75,6 +78,11 @@ class ServiceProvider(AppKit.NSObject):
     def friendlyService_userData_error_(self, pasteboard, userData, error):
         print("SERVICE CALLED: friendlyService", flush=True)
         self._handle_service(pasteboard, RewriteMode.FRIENDLY)
+
+    @objc.typedSelector(b"v@:@@o^@")
+    def askVoxService_userData_error_(self, pasteboard, userData, error):
+        print("SERVICE CALLED: askVoxService", flush=True)
+        self._handle_custom_service(pasteboard)
 
     def _handle_service(self, pasteboard, mode):
         """Handle a service invocation for any mode."""
@@ -135,6 +143,75 @@ class ServiceProvider(AppKit.NSObject):
             traceback.print_exc()
             ErrorNotifier.show_generic_error(f"Unexpected error: {e}")
             self._toast_manager.hide()
+
+    def _handle_custom_service(self, pasteboard):
+        """Handle a custom-instruction service invocation."""
+        try:
+            api_client = self._get_api_client()
+            if api_client is None:
+                ErrorNotifier.show_api_key_error()
+                return
+
+            text = self._read_text_from_pasteboard(pasteboard)
+            if not text or not text.strip():
+                return
+
+            instruction = self._prompt_custom_instruction()
+            if instruction is None:
+                return
+
+            self._toast_manager.show("Asking Vox...")
+
+            config = get_config()
+            thinking_mode = config.thinking_mode
+            result = api_client.rewrite_with_instruction(text, instruction, thinking_mode)
+            self._write_text_to_pasteboard(pasteboard, result)
+            self._toast_manager.hide()
+
+        except APIKeyError:
+            ErrorNotifier.show_invalid_key_error()
+            self._toast_manager.hide()
+
+        except NetworkError:
+            ErrorNotifier.show_network_error()
+            self._toast_manager.hide()
+
+        except RateLimitError:
+            ErrorNotifier.show_rate_limit_error()
+            self._toast_manager.hide()
+
+        except RewriteError as e:
+            ErrorNotifier.show_generic_error(str(e))
+            self._toast_manager.hide()
+
+        except Exception as e:
+            print(f"DEBUG: EXCEPTION: {type(e).__name__}: {e}", flush=True)
+            import traceback
+            traceback.print_exc()
+            ErrorNotifier.show_generic_error(f"Unexpected error: {e}")
+            self._toast_manager.hide()
+
+    def _prompt_custom_instruction(self) -> Optional[str]:
+        """Prompt for a custom rewrite instruction."""
+        alert = AppKit.NSAlert.alloc().init()
+        alert.setMessageText_("Ask Vox")
+        alert.setInformativeText_(
+            "Enter how you want Vox to rewrite the selected text."
+        )
+        alert.addButtonWithTitle_("Rewrite")
+        alert.addButtonWithTitle_("Cancel")
+
+        input_field = AppKit.NSTextField.alloc().initWithFrame_(
+            AppKit.NSMakeRect(0, 0, 420, 24)
+        )
+        input_field.setStringValue_("Improve clarity and tone")
+        alert.setAccessoryView_(input_field)
+
+        AppKit.NSApp.activateIgnoringOtherApps_(True)
+        response = alert.runModal()
+        if response != AppKit.NSAlertFirstButtonReturn:
+            return None
+        return input_field.stringValue()
 
     def _read_text_from_pasteboard(self, pasteboard: AppKit.NSPasteboard) -> Optional[str]:
         """

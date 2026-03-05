@@ -5,7 +5,6 @@ Provides a menu bar icon with access to settings and configuration.
 """
 import objc
 import AppKit
-import Foundation
 from PyObjCTools import AppHelper
 from typing import Optional
 import threading
@@ -25,16 +24,11 @@ from Quartz.CoreGraphics import (
 )
 
 from vox.config import get_config
-from vox.api import RewriteMode, RewriteAPI, APIKeyError, NetworkError, RateLimitError, RewriteError, DISPLAY_NAMES
+from vox.api import RewriteMode, RewriteAPI, APIKeyError, NetworkError, RateLimitError, RewriteError
 from vox.service import ServiceProvider
 from vox.notifications import LoadingBarManager, ErrorNotifier, RecordingToastManager
 from vox.hotkey import (
     create_hotkey_manager,
-    KEY_CODE_TO_CHAR,
-    MODIFIER_SYMBOLS,
-    format_hotkey_display,
-    modifier_mask_to_string,
-    parse_modifiers,
 )
 from vox.preferences import show_preferences_window
 from vox.speech import (
@@ -355,8 +349,11 @@ class MenuBarApp:
         # Re-register speech hotkey
         if speech_enabled:
             self._apply_speech_hotkey_config()
+            # Register or re-register hotkeys (works even if only speech hotkey is configured)
             if self._hotkey_manager.is_registered():
                 self._hotkey_manager.reregister_hotkey()
+            else:
+                self._hotkey_manager.register_hotkey()
 
     def _show_about(self):
         """Show the about dialog (opens preferences on About tab)."""
@@ -472,6 +469,11 @@ class MenuBarApp:
             traceback.print_exc()
             # Reset recording state on error
             self._is_speech_recording = False
+            # Cancel the transcriber recording state
+            try:
+                self._transcriber.cancel_recording(recorder_key=0)
+            except Exception:
+                pass
             try:
                 self._recording_toast.hide()
             except Exception:
@@ -482,14 +484,33 @@ class MenuBarApp:
         if self._is_speech_recording:
             return
 
-        # Check microphone permission
+        # Show recording toast immediately for visual feedback
+        self._recording_toast.show_recording()
+
+        # Check microphone permission and request if needed
         if not AudioRecorder.has_microphone_permission():
-            self._show_microphone_permission_dialog()
+            # Request permission - this shows the system dialog
+            def on_permission_result(granted: bool):
+                if granted:
+                    # Permission granted, continue with recording
+                    self._continue_start_recording()
+                else:
+                    # Permission denied, hide toast and show dialog
+                    self._recording_toast.hide()
+                    self._show_microphone_permission_dialog()
+
+            AudioRecorder.request_microphone_permission(on_permission_result)
             return
 
+        # Already have permission, continue
+        self._continue_start_recording()
+
+    def _continue_start_recording(self):
+        """Continue starting recording after permission check."""
         # Check if model is downloaded
         model_name = self.config.speech_model
         if not self._speech_model_manager.is_model_downloaded(model_name):
+            self._recording_toast.hide()
             ErrorNotifier.show_error(
                 "Vox - Model Not Downloaded",
                 f"Please download the '{model_name}' model in Settings → Speech"
@@ -497,15 +518,20 @@ class MenuBarApp:
             return
 
         try:
-            # Start recording with level callback
-            self._transcriber.start_recording(self._recording_toast.update_level)
+            # Start recording with level callback (use default sample rate)
+            self._transcriber.start_recording(
+                sample_rate=16000,
+                level_callback=self._recording_toast.update_level,
+                recorder_key=0,
+            )
             self._is_speech_recording = True
-            self._recording_toast.show_recording()
             print("Speech recording started", flush=True)
 
-        except MicrophonePermissionError as e:
+        except MicrophonePermissionError:
+            self._recording_toast.hide()
             self._show_microphone_permission_dialog()
         except SpeechError as e:
+            self._recording_toast.hide()
             ErrorNotifier.show_generic_error(str(e))
 
     def _stop_and_transcribe(self):
@@ -519,9 +545,17 @@ class MenuBarApp:
         model_name = self.config.speech_model
         language = self.config.speech_language
 
+        # Check if still recording before transcription
+        if not self._transcriber.is_recording(recorder_key=0):
+            print("Recording was cancelled, skipping transcription", flush=True)
+            self._recording_toast.hide()
+            return
+
         def _do_transcribe():
             try:
-                text = self._transcriber.stop_and_transcribe(model_name, language)
+                text = self._transcriber.stop_and_transcribe(
+                    model_name, language, recorder_key=0
+                )
 
                 # Dispatch result to main thread
                 AppKit.NSOperationQueue.mainQueue().addOperationWithBlock_(
@@ -531,16 +565,16 @@ class MenuBarApp:
                 AppKit.NSOperationQueue.mainQueue().addOperationWithBlock_(
                     lambda: self._fail_speech(f"Model '{model_name}' not downloaded")
                 )
-            except SpeechError as e:
+            except SpeechError as speech_err:
                 AppKit.NSOperationQueue.mainQueue().addOperationWithBlock_(
-                    lambda: self._fail_speech(str(e))
+                    lambda err=speech_err: self._fail_speech(str(err))
                 )
-            except Exception as e:
-                print(f"Transcription error: {e}")
+            except Exception as exc_err:
+                print(f"Transcription error: {exc_err}")
                 import traceback
                 traceback.print_exc()
                 AppKit.NSOperationQueue.mainQueue().addOperationWithBlock_(
-                    lambda: self._fail_speech(f"Transcription failed: {e}")
+                    lambda err=exc_err: self._fail_speech(f"Transcription failed: {err}")
                 )
 
         threading.Thread(target=_do_transcribe, name="VoxSpeech", daemon=True).start()

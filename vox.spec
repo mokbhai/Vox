@@ -76,7 +76,7 @@ app = BUNDLE(
         'LSUIElement': True,
         'NSServices': [
             {
-                'NSMessage': 'fixGrammarService',
+                'NSMessage': 'improveService',
                 'NSMenuItem': {'default': 'Rewrite with Vox'},
                 'NSPortName': 'Vox',
                 'NSSendTypes': ['public.utf8-plain-text'],
@@ -107,6 +107,13 @@ app = BUNDLE(
             {
                 'NSMessage': 'friendlyService',
                 'NSMenuItem': {'default': 'Rewrite with Vox/Friendly'},
+                'NSPortName': 'Vox',
+                'NSSendTypes': ['public.utf8-plain-text'],
+                'NSReturnTypes': ['public.utf8-plain-text'],
+            },
+            {
+                'NSMessage': 'askVoxService',
+                'NSMenuItem': {'default': 'Rewrite with Vox/Ask Vox...'},
                 'NSPortName': 'Vox',
                 'NSSendTypes': ['public.utf8-plain-text'],
                 'NSReturnTypes': ['public.utf8-plain-text'],
